@@ -1,0 +1,155 @@
+import {
+  Controller, Post, Get, Delete, Param, Body, Res, Query, UnauthorizedException,
+  UseGuards, UseInterceptors, UploadedFile,
+} from '@nestjs/common'
+import type { Response } from 'express'
+import { FileInterceptor } from '@nestjs/platform-express'
+import { diskStorage } from 'multer'
+import { extname } from 'path'
+import { JwtService } from '@nestjs/jwt'
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
+import { CurrentUser } from '../../common/decorators/current-user.decorator'
+import { DocumentService } from './document.service'
+import type { PipelineStep } from '../../agents/orchestrator.agent'
+import { v4 as uuid } from 'uuid'
+
+@Controller('documents')
+export class DocumentController {
+  constructor(
+    private documentService: DocumentService,
+    private jwtService: JwtService,
+  ) {}
+
+  @Post('upload')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStorage({
+        destination: './uploads',
+        filename: (_req, file, cb) => {
+          const name = `${uuid()}${extname(file.originalname)}`
+          cb(null, name)
+        },
+      }),
+      limits: { fileSize: 10 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        const allowed = ['.pdf', '.doc', '.docx']
+        const ext = extname(file.originalname).toLowerCase()
+        if (allowed.includes(ext)) {
+          cb(null, true)
+        } else {
+          cb(new Error('仅支持 PDF、DOC、DOCX 格式'), false)
+        }
+      },
+    }),
+  )
+  async upload(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('docType') docType: string,
+    @CurrentUser() user: { id: string },
+  ) {
+    const doc = await this.documentService.create(file, docType as 'resume' | 'job_description', user.id)
+    // Trigger async parsing
+    this.documentService.parseDocument(doc.id).catch(console.error)
+    return { code: 200, message: '上传成功', data: doc }
+  }
+
+  @Get()
+  @UseGuards(JwtAuthGuard)
+  async list(@CurrentUser() user: { id: string }) {
+    const docs = await this.documentService.findByUser(user.id)
+    return { code: 200, message: 'ok', data: docs }
+  }
+
+  @Get(':id')
+  @UseGuards(JwtAuthGuard)
+  async get(@Param('id') id: string) {
+    const doc = await this.documentService.findById(id)
+    return { code: 200, message: 'ok', data: doc }
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard)
+  async delete(@Param('id') id: string, @CurrentUser() user: { id: string }) {
+    await this.documentService.delete(id, user.id)
+    return { code: 200, message: '删除成功', data: null }
+  }
+
+  @Post(':id/parse')
+  @UseGuards(JwtAuthGuard)
+  async parse(@Param('id') id: string) {
+    // Fire-and-forget: parse in background, return immediately
+    this.documentService.parseDocument(id).catch((err) =>
+      console.error(`Parse failed for ${id}:`, err.message),
+    )
+    return { code: 200, message: '解析任务已提交，请稍后刷新查看结果' }
+  }
+
+  @Get(':id/skills')
+  @UseGuards(JwtAuthGuard)
+  async getSkills(@Param('id') id: string) {
+    const skills = await this.documentService.getDocumentSkills(id)
+    return { code: 200, message: 'ok', data: skills }
+  }
+
+  // SSE 流式推送 Agent 流水线执行过程（token 通过 query 传入，因为 EventSource 不支持自定义 Header）
+  @Get(':id/parse-stream')
+  async parseStream(
+    @Param('id') id: string,
+    @Query('token') token: string,
+    @Res() res: Response,
+  ) {
+    // Verify JWT manually (EventSource doesn't support custom headers)
+    if (!token) {
+      res.status(401).json({ code: 401, message: '缺少 token 参数' })
+      return
+    }
+    let userId: string
+    try {
+      const payload = this.jwtService.verify(token)
+      userId = payload.sub
+    } catch (err) {
+      res.status(401).json({ code: 401, message: 'token 无效: ' + (err as Error).message })
+      return
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')
+    res.flushHeaders()
+
+    const send = (event: string, data: unknown) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    }
+
+    const onProgress = (step: PipelineStep) => {
+      send('progress', step)
+    }
+
+    try {
+      const doc = await this.documentService.findById(id)
+      send('start', { documentId: id, filename: doc.originalFilename, userId })
+
+      const result = await this.documentService.parseDocumentStream(id, onProgress)
+
+      send('complete', {
+        success: result.success,
+        skillCount: (result.data['extractedSkills'] as any[])?.length || 0,
+        summary: result.summary,
+      })
+
+      // Send the full parsed doc as final data so frontend can update
+      const updatedDoc = await this.documentService.findById(id)
+      send('result', {
+        status: updatedDoc.status,
+        parsedJson: updatedDoc.parsedJson,
+        parsedText: updatedDoc.parsedText,
+      })
+    } catch (err) {
+      send('error', { message: (err as Error).message })
+    } finally {
+      res.end()
+    }
+  }
+}
