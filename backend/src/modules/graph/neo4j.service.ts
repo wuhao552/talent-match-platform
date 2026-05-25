@@ -32,24 +32,19 @@ export class Neo4jService implements OnModuleDestroy {
   async addPersonSkill(
     userId: string,
     skillId: number,
+    skillName: string,
     proficiency?: string,
-    years?: number,
   ) {
-    const params: Record<string, unknown> = { userId, skillId }
-    let setClause = 'SET r.proficiency = $proficiency'
+    const params: Record<string, unknown> = { userId, skillId, skillName }
     params['proficiency'] = proficiency || 'intermediate'
-
-    if (years !== undefined && years !== null) {
-      setClause += ', r.yearsOfExperience = $years'
-      params['years'] = years
-    }
 
     return this.run(
       `
       MERGE (p:Person {userId: $userId})
       MERGE (s:Skill {id: $skillId})
+      SET s.name = COALESCE(s.name, $skillName)
       MERGE (p)-[r:HAS_SKILL]->(s)
-      ${setClause}
+      SET r.proficiency = $proficiency
       `,
       params,
     )
@@ -59,6 +54,7 @@ export class Neo4jService implements OnModuleDestroy {
   async addJobSkill(
     documentId: string,
     skillId: number,
+    skillName: string,
     importance?: string,
     proficiency?: string,
   ) {
@@ -66,6 +62,7 @@ export class Neo4jService implements OnModuleDestroy {
       `
       MERGE (j:JobPosition {documentId: $documentId})
       MERGE (s:Skill {id: $skillId})
+      SET s.name = COALESCE(s.name, $skillName)
       MERGE (j)-[r:REQUIRES_SKILL]->(s)
       SET r.importance = $importance,
           r.proficiency = $proficiency
@@ -73,6 +70,7 @@ export class Neo4jService implements OnModuleDestroy {
       {
         documentId,
         skillId,
+        skillName,
         importance: importance || 'required',
         proficiency: proficiency || 'intermediate',
       },
@@ -102,9 +100,10 @@ export class Neo4jService implements OnModuleDestroy {
       const skillId = `skill-${record.get('s').properties.id}`
       if (!seen.has(skillId)) {
         seen.add(skillId)
+        const sName = record.get('s').properties?.name || `技能 ${record.get('s').properties.id}`
         nodes.push({
           id: skillId,
-          label: `技能 ${record.get('s').properties.id}`,
+          label: sName,
           type: 'skill',
           proficiency: record.get('r')?.properties?.proficiency,
         })
@@ -119,9 +118,10 @@ export class Neo4jService implements OnModuleDestroy {
         const relatedId = `skill-${record.get('related').properties.id}`
         if (!seen.has(relatedId)) {
           seen.add(relatedId)
+          const rName = record.get('related').properties?.name || `技能 ${record.get('related').properties.id}`
           nodes.push({
             id: relatedId,
-            label: `技能 ${record.get('related').properties.id}`,
+            label: rName,
             type: 'related_skill',
           })
         }
@@ -158,9 +158,10 @@ export class Neo4jService implements OnModuleDestroy {
       const skillId = `skill-${record.get('s').properties.id}`
       if (!seen.has(skillId)) {
         seen.add(skillId)
+        const sName = record.get('s').properties?.name || `技能 ${record.get('s').properties.id}`
         nodes.push({
           id: skillId,
-          label: `技能 ${record.get('s').properties.id}`,
+          label: sName,
           type: 'skill',
         })
         edges.push({
@@ -206,11 +207,11 @@ export class Neo4jService implements OnModuleDestroy {
 
       if (!seen.has(aId)) {
         seen.add(aId)
-        nodes.push({ id: aId, label: `技能 ${record.get('a').properties.id}`, type: 'skill' })
+        nodes.push({ id: aId, label: record.get('a').properties?.name || `技能 ${record.get('a').properties.id}`, type: 'skill' })
       }
       if (!seen.has(bId)) {
         seen.add(bId)
-        nodes.push({ id: bId, label: `技能 ${record.get('b').properties.id}`, type: 'skill' })
+        nodes.push({ id: bId, label: record.get('b').properties?.name || `技能 ${record.get('b').properties.id}`, type: 'skill' })
       }
 
       edges.push({

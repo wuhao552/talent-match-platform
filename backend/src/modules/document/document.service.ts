@@ -8,6 +8,14 @@ import { Skill } from '../skill/skill.entity'
 import { OrchestratorAgent, type ProgressCallback } from '../../agents/orchestrator.agent'
 import type { AgentResult } from '../../agents/agent.interface'
 
+function decodeFileName(name: string): string {
+  try {
+    return Buffer.from(name, 'latin1').toString('utf8')
+  } catch {
+    return name
+  }
+}
+
 @Injectable()
 export class DocumentService {
   constructor(
@@ -21,16 +29,28 @@ export class DocumentService {
   ) {}
 
   async create(file: Express.Multer.File, docType: DocType, userId: string): Promise<Document> {
-    const ext = extname(file.originalname).toLowerCase().replace('.', '') as FileFormat
+    const originalName = decodeFileName(file.originalname)
+    const ext = extname(originalName).toLowerCase().replace('.', '') as FileFormat
     const doc = this.docRepo.create({
       userId,
       docType,
-      originalFilename: file.originalname,
+      originalFilename: originalName,
       filePath: file.path,
       fileFormat: ext,
       status: 'uploaded',
     })
     return this.docRepo.save(doc)
+  }
+
+  async createBatch(files: Express.Multer.File[], docType: DocType, userId: string): Promise<Document[]> {
+    const docs: Document[] = []
+    for (const file of files) {
+      const doc = await this.create(file, docType, userId)
+      docs.push(doc)
+      // Trigger async parsing for each
+      this.parseDocument(doc.id).catch(console.error)
+    }
+    return docs
   }
 
   async findById(id: string): Promise<Document> {
@@ -52,12 +72,16 @@ export class DocumentService {
     await this.docRepo.remove(doc)
   }
 
-  async parseDocumentStream(documentId: string, onProgress?: ProgressCallback) {
+  async parseDocumentStream(
+    documentId: string,
+    onProgress?: ProgressCallback,
+    onChunk?: (agent: string, token: string) => void,
+  ) {
     const doc = await this.findById(documentId)
     doc.status = 'parsing'
     await this.docRepo.save(doc)
 
-    const result = await this.orchestrator.runParsePipelineStream(doc, onProgress)
+    const result = await this.orchestrator.runParsePipelineStream(doc, onProgress, onChunk)
     await this.saveParseResult(doc, result)
     return result
   }
@@ -91,13 +115,13 @@ export class DocumentService {
           model: (llmParseDetail as any).model,
           success: (llmParseDetail as any).success,
           latencyMs: (llmParseDetail as any).latencyMs,
-          rawResponse: (llmParseDetail as any).rawResponse?.slice(0, 1000),
+          rawResponse: (llmParseDetail as any).rawResponse,
         } : null,
         skillExtraction: skillLlmDetail ? {
           model: (skillLlmDetail as any).model,
           success: (skillLlmDetail as any).success,
           latencyMs: (skillLlmDetail as any).latencyMs,
-          rawResponse: (skillLlmDetail as any).rawResponse?.slice(0, 1000),
+          rawResponse: (skillLlmDetail as any).rawResponse,
         } : null,
       },
     }
@@ -120,7 +144,6 @@ export class DocumentService {
         documentId: doc.id, skillId: ms.skillId,
         skillName: es?.name || ms.name || undefined,
         proficiency: (ms.proficiency as any) || 'intermediate',
-        yearsOfExperience: es?.yearsOfExperience ?? ms.years,
         confidence: es?.confidence || 0.95,
         sourceText: es?.sourceText || '',
         extractionMethod: 'llm',

@@ -45,7 +45,7 @@ export class DocumentParserAgent implements IAgent {
     // Step 2: Structured parsing via LLM
     let parsedJson: Record<string, unknown> = {}
     try {
-      const llmResult = await this.llmService.parseDocument(parsedText)
+      const llmResult = await this.llmService.parseDocument(parsedText, context.onChunk)
       parsedJson = llmResult.parsed
 
       return {

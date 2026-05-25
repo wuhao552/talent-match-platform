@@ -56,7 +56,8 @@ export class MatchingService {
       if (personSkill) {
         const proficiencyScore = this.calcProficiencyScore(personSkill.proficiency, jobSkill.proficiency)
         matchDetails.push({
-          skillId, skillName: jobSkill.skill?.name || `#${skillId}`,
+          skillId,
+          skillName: jobSkill.skillName || jobSkill.skill?.name || `技能 ${skillId}`,
           personProficiency: personSkill.proficiency || 'unknown',
           jobRequirement: jobSkill.proficiency || 'unknown',
           score: proficiencyScore,
@@ -94,31 +95,40 @@ export class MatchingService {
   }
 
   async recommend(userId: string, userRole: string): Promise<EnrichedMatch[]> {
+    const results: MatchResult[] = []
+    const seen = new Set<string>()
+
     if (userRole === 'individual') {
-      const myDocs = await this.docRepo.find({ where: { userId, docType: 'resume', status: 'parsed' }, order: { createdAt: 'DESC' } })
+      const myDocs = await this.docRepo.find({ where: { userId, docType: 'resume', status: 'parsed' } })
       if (myDocs.length === 0) return []
-      const myDoc = myDocs[0]
 
       const jobDocs = await this.docRepo.find({ where: { docType: 'job_description', status: 'parsed' } })
-      const results: MatchResult[] = []
-      for (const jobDoc of jobDocs) {
-        const existing = await this.matchRepo.findOne({ where: { resumeDocId: myDoc.id, jobDocId: jobDoc.id } })
-        results.push(existing || await this.calculateMatch(myDoc.id, jobDoc.id))
+      for (const myDoc of myDocs) {
+        for (const jobDoc of jobDocs) {
+          const key = `${myDoc.id}-${jobDoc.id}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          const existing = await this.matchRepo.findOne({ where: { resumeDocId: myDoc.id, jobDocId: jobDoc.id } })
+          results.push(existing || await this.calculateMatch(myDoc.id, jobDoc.id))
+        }
       }
-      return this.enrichResults(results.sort((a, b) => b.overallScore - a.overallScore))
     } else {
-      const myJobs = await this.docRepo.find({ where: { userId, docType: 'job_description', status: 'parsed' }, order: { createdAt: 'DESC' } })
+      const myJobs = await this.docRepo.find({ where: { userId, docType: 'job_description', status: 'parsed' } })
       if (myJobs.length === 0) return []
-      const myJob = myJobs[0]
 
       const resumeDocs = await this.docRepo.find({ where: { docType: 'resume', status: 'parsed' } })
-      const results: MatchResult[] = []
-      for (const resumeDoc of resumeDocs) {
-        const existing = await this.matchRepo.findOne({ where: { resumeDocId: resumeDoc.id, jobDocId: myJob.id } })
-        results.push(existing || await this.calculateMatch(resumeDoc.id, myJob.id))
+      for (const myJob of myJobs) {
+        for (const resumeDoc of resumeDocs) {
+          const key = `${resumeDoc.id}-${myJob.id}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          const existing = await this.matchRepo.findOne({ where: { resumeDocId: resumeDoc.id, jobDocId: myJob.id } })
+          results.push(existing || await this.calculateMatch(resumeDoc.id, myJob.id))
+        }
       }
-      return this.enrichResults(results.sort((a, b) => b.overallScore - a.overallScore))
     }
+
+    return this.enrichResults(results.sort((a, b) => b.overallScore - a.overallScore))
   }
 
   async getResults(userId: string): Promise<EnrichedMatch[]> {
@@ -133,8 +143,10 @@ export class MatchingService {
     return this.enrichResults(results)
   }
 
-  async getResult(id: string): Promise<MatchResult> {
-    return this.matchRepo.findOneOrFail({ where: { id } })
+  async getResult(id: string): Promise<EnrichedMatch> {
+    const result = await this.matchRepo.findOneOrFail({ where: { id } })
+    const [enriched] = await this.enrichResults([result])
+    return enriched
   }
 
   private async enrichResults(results: MatchResult[]): Promise<EnrichedMatch[]> {
@@ -170,14 +182,14 @@ export class MatchingService {
         resumeFilename: resumeDoc.originalFilename,
         candidateName: resumeParsed?.name || candidate?.username || '未知',
         candidateCity: candidate?.city || resumeParsed?.city || '',
-        candidateTopSkills: resumeSkills.map((s) => s.skillName || `#${s.skillId}`).filter(Boolean),
+        candidateTopSkills: resumeSkills.map((s) => s.skillName || s.skill?.name || '').filter(Boolean),
         jobDocId: r.jobDocId,
         jobFilename: jobDoc.originalFilename,
         // Prefer user profile companyName, then parsed company, skip bare username
         companyName: company?.companyName || jobParsed?.company || jobParsed?.organization || '',
         jobTitle: jobParsed?.title || jobParsed?.position || jobDoc.originalFilename,
         jobCity: company?.city || jobParsed?.city || '',
-        jobTopSkills: jobSkills.map((s) => s.skillName || `#${s.skillId}`).filter(Boolean),
+        jobTopSkills: jobSkills.map((s) => s.skillName || s.skill?.name || '').filter(Boolean),
       })
     }
     return enriched

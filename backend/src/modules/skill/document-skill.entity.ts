@@ -33,9 +33,6 @@ export class DocumentSkill {
   @Column({ type: 'varchar', length: 20, nullable: true })
   proficiency: Proficiency
 
-  @Column({ name: 'years_of_experience', type: 'decimal', precision: 4, scale: 1, nullable: true })
-  yearsOfExperience: number
-
   @Column({ name: 'skill_name', length: 128, nullable: true })
   skillName: string
 

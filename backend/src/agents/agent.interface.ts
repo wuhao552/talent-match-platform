@@ -2,6 +2,7 @@ export interface AgentContext {
   sessionId: string
   userId: string
   input: Record<string, unknown>
+  onChunk?: (token: string) => void
 }
 
 export interface AgentResult {

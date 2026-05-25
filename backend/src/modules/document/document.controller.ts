@@ -1,9 +1,9 @@
 import {
   Controller, Post, Get, Delete, Param, Body, Res, Query, UnauthorizedException,
-  UseGuards, UseInterceptors, UploadedFile,
+  UseGuards, UseInterceptors, UploadedFile, UploadedFiles,
 } from '@nestjs/common'
 import type { Response } from 'express'
-import { FileInterceptor } from '@nestjs/platform-express'
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express'
 import { diskStorage } from 'multer'
 import { extname } from 'path'
 import { JwtService } from '@nestjs/jwt'
@@ -12,6 +12,14 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { DocumentService } from './document.service'
 import type { PipelineStep } from '../../agents/orchestrator.agent'
 import { v4 as uuid } from 'uuid'
+
+function decodeFileName(name: string): string {
+  try {
+    return Buffer.from(name, 'latin1').toString('utf8')
+  } catch {
+    return name
+  }
+}
 
 @Controller('documents')
 export class DocumentController {
@@ -27,14 +35,14 @@ export class DocumentController {
       storage: diskStorage({
         destination: './uploads',
         filename: (_req, file, cb) => {
-          const name = `${uuid()}${extname(file.originalname)}`
+          const name = `${uuid()}${extname(decodeFileName(file.originalname))}`
           cb(null, name)
         },
       }),
       limits: { fileSize: 10 * 1024 * 1024 },
       fileFilter: (_req, file, cb) => {
         const allowed = ['.pdf', '.doc', '.docx']
-        const ext = extname(file.originalname).toLowerCase()
+        const ext = extname(decodeFileName(file.originalname)).toLowerCase()
         if (allowed.includes(ext)) {
           cb(null, true)
         } else {
@@ -52,6 +60,38 @@ export class DocumentController {
     // Trigger async parsing
     this.documentService.parseDocument(doc.id).catch(console.error)
     return { code: 200, message: '上传成功', data: doc }
+  }
+
+  @Post('upload-batch')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(
+    FilesInterceptor('files', 50, {
+      storage: diskStorage({
+        destination: './uploads',
+        filename: (_req, file, cb) => {
+          const name = `${uuid()}${extname(decodeFileName(file.originalname))}`
+          cb(null, name)
+        },
+      }),
+      limits: { fileSize: 10 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        const allowed = ['.pdf', '.doc', '.docx']
+        const ext = extname(decodeFileName(file.originalname)).toLowerCase()
+        if (allowed.includes(ext)) {
+          cb(null, true)
+        } else {
+          cb(new Error('仅支持 PDF、DOC、DOCX 格式'), false)
+        }
+      },
+    }),
+  )
+  async uploadBatch(
+    @UploadedFiles() files: Express.Multer.File[],
+    @Body('docType') docType: string,
+    @CurrentUser() user: { id: string },
+  ) {
+    const docs = await this.documentService.createBatch(files, docType as 'resume' | 'job_description', user.id)
+    return { code: 200, message: `成功上传 ${docs.length} 个文件`, data: docs }
   }
 
   @Get()
@@ -127,11 +167,15 @@ export class DocumentController {
       send('progress', step)
     }
 
+    const onChunk = (agent: string, token: string) => {
+      send('chunk', { agent, token })
+    }
+
     try {
       const doc = await this.documentService.findById(id)
       send('start', { documentId: id, filename: doc.originalFilename, userId })
 
-      const result = await this.documentService.parseDocumentStream(id, onProgress)
+      const result = await this.documentService.parseDocumentStream(id, onProgress, onChunk)
 
       send('complete', {
         success: result.success,

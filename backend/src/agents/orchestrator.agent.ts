@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common'
 import { DocumentParserAgent } from './document-parser.agent'
 import { SkillExtractorAgent } from './skill-extractor.agent'
 import { GraphBuilderAgent } from './graph-builder.agent'
+import { SkillMatcherService } from '../modules/skill/skill-matcher.service'
 import type { AgentResult } from './agent.interface'
 
 export interface PipelineStep {
@@ -14,6 +15,7 @@ export interface PipelineStep {
 }
 
 export type ProgressCallback = (step: PipelineStep) => void
+export type ChunkCallback = (agent: string, token: string) => void
 
 @Injectable()
 export class OrchestratorAgent {
@@ -21,6 +23,7 @@ export class OrchestratorAgent {
     private docParser: DocumentParserAgent,
     private skillExtractor: SkillExtractorAgent,
     private graphBuilder: GraphBuilderAgent,
+    private skillMatcher: SkillMatcherService,
   ) {}
 
   async runParsePipeline(document: {
@@ -37,15 +40,17 @@ export class OrchestratorAgent {
       id: string; userId: string; docType: string; filePath: string; fileFormat: string
     },
     onProgress?: ProgressCallback,
+    onChunk?: ChunkCallback,
   ): Promise<AgentResult> {
     const sessionId = `parse-${document.id}`
     const emit = (step: PipelineStep) => onProgress?.(step)
 
-    // Step 1: Dcoument Parser Agent
+    // Step 1: Document Parser Agent
     emit({ agent: 'document_parser', status: 'running', summary: '正在读取并解析文档...', timestamp: Date.now() })
     const parseResult = await this.docParser.execute({
       sessionId, userId: document.userId,
       input: { filePath: document.filePath, fileFormat: document.fileFormat },
+      onChunk: onChunk ? (t: string) => onChunk('document_parser', t) : undefined,
     })
 
     const parsedText = parseResult.data['parsedText'] as string
@@ -63,7 +68,7 @@ export class OrchestratorAgent {
           ...(llmParseDetail ? {
             model: (llmParseDetail as any).model,
             latencyMs: (llmParseDetail as any).latencyMs,
-            rawResponse: (llmParseDetail as any).rawResponse?.slice(0, 500),
+            rawResponse: (llmParseDetail as any).rawResponse,
           } : {}),
         },
         timestamp: Date.now(),
@@ -74,7 +79,7 @@ export class OrchestratorAgent {
     }
 
     // Step 2: Skill Extractor Agent
-    let extractedSkills: Array<{ name: string; proficiency: string; yearsOfExperience?: number }> = []
+    let extractedSkills: Array<{ name: string; proficiency: string }> = []
     let skillLlmDetail = null
 
     emit({ agent: 'skill_extractor', status: 'running', summary: '正在调用大模型提取技能标签...', timestamp: Date.now() })
@@ -83,6 +88,7 @@ export class OrchestratorAgent {
       const extractResult = await this.skillExtractor.execute({
         sessionId, userId: document.userId,
         input: { parsedText },
+        onChunk: onChunk ? (t: string) => onChunk('skill_extractor', t) : undefined,
       })
 
       if (extractResult.success) {
@@ -93,11 +99,11 @@ export class OrchestratorAgent {
           summary: `大模型提取 ${extractedSkills.length} 个技能标签`,
           data: {
             skillCount: extractedSkills.length,
-            skills: extractedSkills.slice(0, 20).map((s: any) => ({ name: s.name, proficiency: s.proficiency, years: s.yearsOfExperience })),
+            skills: extractedSkills.slice(0, 20).map((s: any) => ({ name: s.name, proficiency: s.proficiency })),
             ...(skillLlmDetail ? {
               model: (skillLlmDetail as any).model,
               latencyMs: (skillLlmDetail as any).latencyMs,
-              rawResponse: (skillLlmDetail as any).rawResponse?.slice(0, 500),
+              rawResponse: (skillLlmDetail as any).rawResponse,
             } : {}),
           },
           timestamp: Date.now(),
@@ -107,13 +113,14 @@ export class OrchestratorAgent {
       emit({ agent: 'skill_extractor', status: 'error', summary: '技能提取失败', error: (err as Error).message, timestamp: Date.now() })
     }
 
-    // Step 3: Graph Builder Agent
-    const mappedSkills = extractedSkills.map((s) => ({
-      skillId: this.hashSkillName(s.name),
-      proficiency: s.proficiency,
-      years: s.yearsOfExperience,
-      name: s.name,
-    }))
+    // Step 3: Map extracted names to canonical skill IDs
+    const mappedSkills: { skillId: number; proficiency: string; name: string }[] = []
+    for (const s of extractedSkills) {
+      const match = this.skillMatcher.match(s.name)
+      if (match) {
+        mappedSkills.push({ skillId: match.id, proficiency: s.proficiency, name: match.name })
+      }
+    }
 
     let graphResult: AgentResult = { success: true, data: {}, summary: '' }
     if (mappedSkills.length > 0) {
@@ -139,11 +146,5 @@ export class OrchestratorAgent {
       data: { parsedText, parsedJson: parsedJson || {}, llmParseDetail, extractedSkills, skillLlmDetail, mappedSkills, graphResult },
       summary: [parseResult.summary, `技能提取: ${extractedSkills.length} 个`, graphResult.summary].join(' | '),
     }
-  }
-
-  private hashSkillName(name: string): number {
-    let hash = 0
-    for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) & 0xffffffff
-    return Math.abs(hash) % 314
   }
 }

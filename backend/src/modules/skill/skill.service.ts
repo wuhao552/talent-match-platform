@@ -55,11 +55,17 @@ export class SkillService {
     return this.skillRepo.save(skill)
   }
 
-  async getOrCreate(skillId: number): Promise<Skill> {
+  async getOrCreate(skillId: number, skillName?: string): Promise<Skill> {
     const existing = await this.skillRepo.findOne({ where: { id: skillId } })
-    if (existing) return existing
+    if (existing) {
+      if (skillName && !existing.name) {
+        existing.name = skillName
+        await this.skillRepo.save(existing)
+      }
+      return existing
+    }
 
-    const skill = this.skillRepo.create({ id: skillId })
+    const skill = this.skillRepo.create({ id: skillId, name: skillName })
     return this.skillRepo.save(skill)
   }
 }

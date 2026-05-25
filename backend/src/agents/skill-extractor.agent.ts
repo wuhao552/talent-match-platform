@@ -25,7 +25,7 @@ export class SkillExtractorAgent implements IAgent {
       }
     }
 
-    const result = await this.llmService.extractSkills(parsedText)
+    const result = await this.llmService.extractSkills(parsedText, context.onChunk)
 
     return {
       success: true,

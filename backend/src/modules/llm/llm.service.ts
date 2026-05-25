@@ -3,7 +3,6 @@ import { Injectable } from '@nestjs/common'
 export interface ExtractedSkill {
   name: string
   proficiency: 'beginner' | 'intermediate' | 'advanced' | 'expert'
-  yearsOfExperience?: number
   confidence: number
   sourceText: string
 }
@@ -30,16 +29,30 @@ export class LlmService {
   /**
    * 技能提取 — 简单任务，用 flash 模型
    */
-  async extractSkills(text: string): Promise<{ skills: ExtractedSkill[]; detail: LlmCallDetail }> {
+  async extractSkills(
+    text: string,
+    onChunk?: (token: string) => void,
+  ): Promise<{ skills: ExtractedSkill[]; detail: LlmCallDetail }> {
     const systemPrompt = `你是一个技能提取专家。从给定的文本中提取所有技能标签，并评估熟练度。
-返回纯JSON数组，格式：[{"name":"技能名","proficiency":"熟练度","yearsOfExperience":年数}]
+返回纯JSON数组，格式：[{"name":"技能名","proficiency":"熟练度"}]
 proficiency必须是以下之一：beginner, intermediate, advanced, expert
 如果没有提取到技能，返回空数组 []`
 
     const userMessage = `请从以下文本中提取技能：\n\n${text.slice(0, 8000)}`
 
     const startTime = Date.now()
-    const rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+    let rawResponse: string
+
+    if (onChunk) {
+      rawResponse = ''
+      for await (const chunk of this.callLLMStream(systemPrompt, userMessage, this.flashModel)) {
+        if (!chunk.done) onChunk(chunk.token)
+        rawResponse = chunk.fullText
+      }
+    } else {
+      rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+    }
+
     const latencyMs = Date.now() - startTime
 
     const jsonMatch = rawResponse.match(/\[[\s\S]*\]/)
@@ -50,13 +63,11 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     const parsed = JSON.parse(jsonMatch[0]) as Array<{
       name: string
       proficiency: string
-      yearsOfExperience?: number
     }>
 
     const skills: ExtractedSkill[] = parsed.map((s) => ({
       name: s.name,
       proficiency: this.validateProficiency(s.proficiency),
-      yearsOfExperience: s.yearsOfExperience,
       confidence: 0.95,
       sourceText: '',
     }))
@@ -79,7 +90,10 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
   /**
    * 文档结构化解析 — 用 flash 模型
    */
-  async parseDocument(text: string): Promise<{ parsed: Record<string, unknown>; detail: LlmCallDetail }> {
+  async parseDocument(
+    text: string,
+    onChunk?: (token: string) => void,
+  ): Promise<{ parsed: Record<string, unknown>; detail: LlmCallDetail }> {
     const systemPrompt = `你是一个文档解析专家。从给定的简历或职位描述中提取结构化信息。
 返回纯JSON对象，包含以下字段：
 - name: 姓名
@@ -96,7 +110,18 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     const userMessage = `请解析以下文档：\n\n${text.slice(0, 8000)}`
 
     const startTime = Date.now()
-    const rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+    let rawResponse: string
+
+    if (onChunk) {
+      rawResponse = ''
+      for await (const chunk of this.callLLMStream(systemPrompt, userMessage, this.flashModel)) {
+        if (!chunk.done) onChunk(chunk.token)
+        rawResponse = chunk.fullText
+      }
+    } else {
+      rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+    }
+
     const latencyMs = Date.now() - startTime
 
     const jsonMatch = rawResponse.match(/\{[\s\S]*\}/)
@@ -122,7 +147,99 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
   }
 
   /**
-   * 核心 LLM 调用 — 关闭思考模式
+   * 流式 LLM 调用 — 逐个 token 返回，同时累积完整响应
+   */
+  async *callLLMStream(
+    systemPrompt: string,
+    userMessage: string,
+    model: string,
+  ): AsyncGenerator<{ token: string; done: boolean; fullText: string }> {
+    const apiKey = process.env.LLM_API_KEY
+    if (!apiKey) throw new Error('LLM_API_KEY 未配置')
+
+    const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com'
+
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 120000)
+
+    let fullText = ''
+
+    try {
+      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage },
+          ],
+          temperature: 0.3,
+          max_tokens: 16000,
+          stream: true,
+          thinking: { type: 'disabled' },
+        }),
+      })
+      clearTimeout(timeout)
+
+      if (!response.ok) {
+        const errBody = await response.text()
+        let errMsg = `LLM API 错误 ${response.status}`
+        try {
+          const errJson = JSON.parse(errBody)
+          errMsg += `: ${errJson.error?.message || errBody}`
+        } catch {
+          errMsg += `: ${errBody.slice(0, 200)}`
+        }
+        throw new Error(errMsg)
+      }
+
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('流式响应 body 为空')
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed || !trimmed.startsWith('data:')) continue
+
+          const json = trimmed.slice(5).trim()
+          if (json === '[DONE]') continue
+
+          try {
+            const parsed = JSON.parse(json)
+            const delta = parsed.choices?.[0]?.delta?.content
+            if (delta) {
+              fullText += delta
+              yield { token: delta, done: false, fullText }
+            }
+          } catch {
+            // skip unparseable chunks
+          }
+        }
+      }
+
+      yield { token: '', done: true, fullText }
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
+  /**
+   * 核心 LLM 调用 — 关闭思考模式（非流式）
    */
   private async callLLM(
     systemPrompt: string,
@@ -155,7 +272,6 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
           ],
           temperature: 0.3,
           max_tokens: 16000,
-          // 关闭思考模式
           thinking: { type: 'disabled' },
         }),
       })

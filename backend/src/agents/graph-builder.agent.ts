@@ -21,27 +21,23 @@ export class GraphBuilderAgent implements IAgent {
     const { documentId, docType, skills, userId } = context.input as {
       documentId: string
       docType: string
-      skills: Array<{ skillId: number; proficiency: string; years?: number }>
+      skills: Array<{ skillId: number; proficiency: string; name: string }>
       userId: string
     }
 
     try {
       if (docType === 'resume') {
         for (const skill of skills) {
-          await this.skillService.getOrCreate(skill.skillId)
-          await this.neo4j.addPersonSkill(
-            userId,
-            skill.skillId,
-            skill.proficiency,
-            skill.years,
-          )
+          await this.skillService.getOrCreate(skill.skillId, skill.name)
+          await this.neo4j.addPersonSkill(userId, skill.skillId, skill.name, skill.proficiency)
         }
       } else {
         for (const skill of skills) {
-          await this.skillService.getOrCreate(skill.skillId)
+          await this.skillService.getOrCreate(skill.skillId, skill.name)
           await this.neo4j.addJobSkill(
             documentId,
             skill.skillId,
+            skill.name,
             'required',
             skill.proficiency,
           )
