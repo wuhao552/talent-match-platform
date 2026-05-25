@@ -41,7 +41,6 @@ export interface DocumentSkill {
   skillName?: string
   skill?: Skill
   proficiency: 'beginner' | 'intermediate' | 'advanced' | 'expert'
-  yearsOfExperience?: number
   confidence?: number
   extractionMethod?: string
   sourceText?: string
@@ -129,10 +128,3 @@ export interface AuthResponse {
   user: User
 }
 
-// Pagination
-export interface PaginatedResponse<T> {
-  items: T[]
-  total: number
-  page: number
-  pageSize: number
-}

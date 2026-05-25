@@ -1,151 +1,176 @@
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
+import { Card, CardContent } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
+
+const features = [
+  {
+    icon: '📄',
+    title: '文档智能解析',
+    desc: '支持 PDF、DOC、DOCX 格式的简历与职位描述自动解析，大模型提取结构化信息。',
+  },
+  {
+    icon: '🧠',
+    title: '能力图谱构建',
+    desc: '自动构建个人能力图谱与职位能力图谱，基于 D3 力导向图可视化展示能力结构。',
+  },
+  {
+    icon: '🎯',
+    title: '智能双向匹配',
+    desc: '人才与职位双向智能推荐，多维度匹配评分，提供详细的技能对比依据。',
+  },
+  {
+    icon: '🔗',
+    title: '知识图谱分析',
+    desc: '基于招聘数据构建的技能共现知识图谱，洞察技能关联与需求趋势。',
+  },
+]
+
+const stats = [
+  { value: '314', label: '技能节点' },
+  { value: '60,804', label: '共现关系' },
+  { value: '5', label: '分析粒度' },
+  { value: '< 3s', label: '平均解析' },
+]
+
+const roles = [
+  {
+    emoji: '👤',
+    title: '个人用户',
+    tag: '求职者',
+    items: ['上传简历自动提取技能', '可视化个人能力图谱', '智能职位匹配推荐', '技能趋势洞察'],
+  },
+  {
+    emoji: '🏢',
+    title: '企业用户',
+    tag: '招聘方',
+    items: ['批量上传职位描述', '构建职位能力画像', '智能候选人匹配', '匹配明细与评分'],
+  },
+]
 
 export function Home() {
   const { isAuthenticated } = useAuth()
+  const navigate = useNavigate()
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-24 pb-16">
       {/* Hero */}
-      <section className="py-12 text-center">
-        <h1 className="text-4xl font-bold tracking-tight">
-          AI 智能匹配与能力图谱系统
+      <section className="relative overflow-hidden pt-16 pb-12 text-center">
+        <div className="absolute inset-0 -z-10 bg-gradient-to-b from-primary/5 via-transparent to-transparent" />
+        <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
+          <span className="text-primary">AI</span> 智能匹配与能力图谱
         </h1>
-        <p className="mx-auto mt-4 max-w-2xl text-lg text-muted-foreground">
-          基于自然语言处理与知识图谱技术，实现简历与职位要求的深度结构化解析、
-          能力可视化与智能推荐，提升人才匹配的效率与精准度。
+        <p className="mx-auto mt-5 max-w-xl text-base text-muted-foreground leading-relaxed">
+          基于大语言模型与知识图谱技术，实现简历与职位的深度解析、
+          能力可视化与双向智能匹配。
         </p>
-        {!isAuthenticated && (
-          <div className="mt-8 flex justify-center gap-4">
-            <Button size="lg">
-              <Link to="/register">立即注册</Link>
+        <div className="mt-8 flex justify-center gap-3">
+          {isAuthenticated ? (
+            <Button size="lg" onClick={() => navigate('/dashboard')}>
+              进入工作台
             </Button>
-            <Button size="lg" variant="outline">
-              <Link to="/login">登录</Link>
-            </Button>
-          </div>
-        )}
-        {isAuthenticated && (
-          <div className="mt-8">
-            <Button size="lg">
-              <Link to="/dashboard">进入仪表盘</Link>
-            </Button>
-          </div>
-        )}
+          ) : (
+            <>
+              <Button size="lg" onClick={() => navigate('/register')}>
+                免费注册
+              </Button>
+              <Button size="lg" variant="outline" onClick={() => navigate('/login')}>
+                登录
+              </Button>
+            </>
+          )}
+        </div>
       </section>
 
-      <Separator />
+      {/* Stats bar */}
+      <section className="mx-auto max-w-3xl">
+        <div className="grid grid-cols-4 rounded-xl border bg-card/60 py-6">
+          {stats.map((s) => (
+            <div key={s.label} className="text-center">
+              <p className="text-2xl font-bold text-primary tabular-nums">{s.value}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{s.label}</p>
+            </div>
+          ))}
+        </div>
+      </section>
 
-      {/* Feature Cards */}
+      {/* Features */}
       <section>
-        <h2 className="mb-6 text-center text-2xl font-semibold">核心功能</h2>
-        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">文档智能解析</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">
-                支持 DOC、PDF 格式的简历与职位描述自动解析，提取关键信息并结构化入库。
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">能力图谱构建</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">
-                基于解析数据自动构建个人能力图谱与职位能力图谱，可视化展示能力结构。
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">智能双向匹配</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">
-                人才与职位双向智能推荐，提供匹配度评分与详细依据，提升招聘效率。
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">知识图谱分析</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">
-                基于 10 万+ 招聘数据构建的技能共现知识图谱，洞察技能需求趋势。
-              </p>
-            </CardContent>
-          </Card>
+        <p className="mb-2 text-center text-xs font-medium uppercase tracking-widest text-muted-foreground">
+          核心能力
+        </p>
+        <h2 className="mb-10 text-center text-2xl font-semibold tracking-tight">
+          全流程智能化人才匹配
+        </h2>
+        <div className="mx-auto grid max-w-4xl gap-4 sm:grid-cols-2">
+          {features.map((f) => (
+            <Card key={f.title} className="group transition-shadow hover:shadow-md">
+              <CardContent className="flex gap-4 p-5">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-xl">
+                  {f.icon}
+                </span>
+                <div>
+                  <h3 className="font-semibold">{f.title}</h3>
+                  <p className="mt-1 text-sm text-muted-foreground leading-relaxed">{f.desc}</p>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
         </div>
       </section>
 
-      {/* Stats */}
-      <section className="rounded-lg bg-muted p-8">
-        <div className="grid gap-6 text-center md:grid-cols-3">
-          <div>
-            <p className="text-3xl font-bold text-primary">314</p>
-            <p className="text-sm text-muted-foreground">技能节点</p>
-          </div>
-          <div>
-            <p className="text-3xl font-bold text-primary">60,804</p>
-            <p className="text-sm text-muted-foreground">技能共现关系</p>
-          </div>
-          <div>
-            <p className="text-3xl font-bold text-primary">5</p>
-            <p className="text-sm text-muted-foreground">分析粒度</p>
-          </div>
-        </div>
-      </section>
+      <Separator className="mx-auto max-w-xs" />
 
-      {/* Role Info */}
+      {/* Roles */}
       <section>
-        <h2 className="mb-4 text-center text-2xl font-semibold">适用角色</h2>
-        <div className="grid gap-6 md:grid-cols-2">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <CardTitle>个人用户</CardTitle>
-                <Badge variant="secondary">求职者</Badge>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
-                <li>上传简历，自动提取技能标签</li>
-                <li>生成个人能力图谱，直观了解自身优势</li>
-                <li>智能推荐匹配职位，查看匹配度评分</li>
-                <li>了解技能需求趋势，指导职业发展</li>
-              </ul>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <CardTitle>企业用户</CardTitle>
-                <Badge variant="secondary">招聘方</Badge>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
-                <li>上传职位描述，自动提取技能要求</li>
-                <li>构建职位能力图谱，明确岗位画像</li>
-                <li>智能推荐高分候选人，查看匹配依据</li>
-                <li>批量管理职位与候选人匹配</li>
-              </ul>
-            </CardContent>
-          </Card>
+        <p className="mb-2 text-center text-xs font-medium uppercase tracking-widest text-muted-foreground">
+          适用角色
+        </p>
+        <h2 className="mb-10 text-center text-2xl font-semibold tracking-tight">
+          无论是求职还是招聘，都能找到价值
+        </h2>
+        <div className="mx-auto grid max-w-3xl gap-4 sm:grid-cols-2">
+          {roles.map((r) => (
+            <Card key={r.title} className="group transition-shadow hover:shadow-md">
+              <CardContent className="p-5">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="text-xl">{r.emoji}</span>
+                  <h3 className="font-semibold">{r.title}</h3>
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                    {r.tag}
+                  </span>
+                </div>
+                <ul className="space-y-1.5">
+                  {r.items.map((item) => (
+                    <li key={item} className="flex items-start gap-2 text-sm text-muted-foreground">
+                      <svg className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          ))}
         </div>
       </section>
+
+      {/* CTA */}
+      {!isAuthenticated && (
+        <section className="text-center">
+          <div className="mx-auto max-w-lg rounded-2xl bg-primary/5 px-8 py-10">
+            <h2 className="text-xl font-semibold">开始使用能力图谱匹配系统</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              注册即享文档解析、能力图谱、智能匹配全流程服务
+            </p>
+            <Button size="lg" className="mt-6" onClick={() => navigate('/register')}>
+              免费注册
+            </Button>
+          </div>
+        </section>
+      )}
     </div>
   )
 }

@@ -51,17 +51,36 @@ export const authApi = {
 
 // Documents
 export const documentApi = {
-  upload: (file: File, docType: 'resume' | 'job_description') => {
+  upload: async (file: File, docType: 'resume' | 'job_description') => {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('docType', docType)
 
     const token = localStorage.getItem('token')
-    return fetch(`${BASE}/documents/upload`, {
+    const res = await fetch(`${BASE}/documents/upload`, {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: formData,
-    }).then((r) => r.json()) as Promise<ApiResponse<Document>>
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.message || `上传失败 (${res.status})`)
+    return json as ApiResponse<Document>
+  },
+
+  uploadBatch: async (files: File[], docType: 'resume' | 'job_description') => {
+    const formData = new FormData()
+    files.forEach((f) => formData.append('files', f))
+    formData.append('docType', docType)
+
+    const token = localStorage.getItem('token')
+    const res = await fetch(`${BASE}/documents/upload-batch`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.message || `上传失败 (${res.status})`)
+    return json as ApiResponse<Document[]>
   },
   list: () => request<ApiResponse<Document[]>>('/documents'),
   get: (id: string) => request<ApiResponse<Document>>(`/documents/${id}`),

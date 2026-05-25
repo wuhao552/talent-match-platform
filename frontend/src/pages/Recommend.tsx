@@ -1,14 +1,26 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { matchingApi } from '@/services/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { scoreColor } from '@/lib/utils'
 
 import type { MatchResult } from '@/types'
 
+function ScoreBadge({ score }: { score: number }) {
+  return (
+    <div className="flex items-center gap-1 text-2xl font-bold tabular-nums">
+      <span className={scoreColor(score)}>{Math.round(score)}</span>
+      <span className="text-sm font-normal text-muted-foreground">分</span>
+    </div>
+  )
+}
+
 export function Recommend() {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [results, setResults] = useState<MatchResult[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -28,21 +40,17 @@ export function Recommend() {
     handleRecommend()
   }, [])
 
-  const scoreColor = (score: number) => {
-    if (score >= 80) return 'text-green-600'
-    if (score >= 60) return 'text-yellow-600'
-    return 'text-red-600'
-  }
+  const isIndividual = user?.role === 'individual'
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">
-            {user?.role === 'individual' ? '职位推荐' : '候选人推荐'}
+            {isIndividual ? '职位推荐' : '候选人推荐'}
           </h1>
           <p className="text-muted-foreground">
-            {user?.role === 'individual'
+            {isIndividual
               ? '基于您的技能图谱为您推荐最匹配的职位'
               : '基于职位要求为您推荐最匹配的候选人'}
           </p>
@@ -66,41 +74,48 @@ export function Recommend() {
         <div className="grid gap-4 md:grid-cols-2">
           {results.map((result) => (
             <Card key={result.id}>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-lg">
-                    {user?.role === 'individual' ? '职位匹配' : '候选人匹配'}
-                  </CardTitle>
-                  <span className={`text-2xl font-bold ${scoreColor(result.overallScore)}`}>
-                    {result.overallScore}%
-                  </span>
+              <CardHeader className="pb-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <CardTitle className="text-base truncate">
+                      {isIndividual
+                        ? (result.jobTitle || result.jobFilename || '未知职位')
+                        : (result.candidateName || '未知候选人')}
+                    </CardTitle>
+                    {isIndividual && result.companyName && (
+                      <p className="mt-0.5 text-xs text-muted-foreground">{result.companyName}</p>
+                    )}
+                    {!isIndividual && result.candidateCity && (
+                      <p className="mt-0.5 text-xs text-muted-foreground">{result.candidateCity}</p>
+                    )}
+                  </div>
+                  <ScoreBadge score={result.overallScore} />
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="flex gap-2">
-                  <Badge variant="outline">技能: {result.skillMatchScore}%</Badge>
-                  {result.cityMatchBonus > 0 && (
-                    <Badge variant="secondary">城市: +{result.cityMatchBonus}%</Badge>
-                  )}
-                </div>
-
+                {/* Matching skills */}
                 {result.matchDetails && result.matchDetails.length > 0 && (
                   <div>
-                    <p className="mb-1 text-xs font-medium text-muted-foreground">
+                    <p className="mb-1.5 text-xs text-muted-foreground">
                       匹配技能 ({result.matchDetails.length})
                     </p>
                     <div className="flex flex-wrap gap-1">
                       {result.matchDetails.slice(0, 8).map((d, i) => (
-                        <Badge key={i} variant="secondary" className="text-xs">
-                          {d.skillName} {d.score}%
+                        <Badge key={i} variant="secondary" className="text-[11px]">
+                          {d.skillName}
                         </Badge>
                       ))}
+                      {result.matchDetails.length > 8 && (
+                        <span className="text-[11px] text-muted-foreground">
+                          +{result.matchDetails.length - 8}
+                        </span>
+                      )}
                     </div>
                   </div>
                 )}
 
-                <Button size="sm" variant="outline">
-                  <a href={`/matching/${result.resumeDocId}`}>查看详情</a>
+                <Button size="sm" variant="outline" onClick={() => navigate(`/matching/${result.id}`)}>
+                  查看详情
                 </Button>
               </CardContent>
             </Card>
