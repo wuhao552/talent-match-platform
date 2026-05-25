@@ -149,6 +149,16 @@ export class MatchingService {
     return enriched
   }
 
+  async getMatchesByJob(jobDocId: string): Promise<EnrichedMatch[]> {
+    const results = await this.matchRepo.find({ where: { jobDocId } })
+    return this.enrichResults(results.sort((a, b) => b.overallScore - a.overallScore))
+  }
+
+  async getMatchesByResume(resumeDocId: string): Promise<EnrichedMatch[]> {
+    const results = await this.matchRepo.find({ where: { resumeDocId } })
+    return this.enrichResults(results.sort((a, b) => b.overallScore - a.overallScore))
+  }
+
   private async enrichResults(results: MatchResult[]): Promise<EnrichedMatch[]> {
     const enriched: EnrichedMatch[] = []
     for (const r of results) {

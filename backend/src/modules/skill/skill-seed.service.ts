@@ -8,7 +8,7 @@ import * as path from 'path'
 
 @Injectable()
 export class SkillSeedService implements OnModuleInit {
-  private readonly entityMapDir = path.resolve(process.env.ENTITY_MAP_DIR || 'C:/Users/18967/Desktop/claude/entity_map/entity_map')
+  private readonly entityMapDir = path.resolve(process.env.ENTITY_MAP_DIR || path.join(__dirname, '../../../../data/entity_map'))
 
   constructor(
     @InjectRepository(Skill) private skillRepo: Repository<Skill>,

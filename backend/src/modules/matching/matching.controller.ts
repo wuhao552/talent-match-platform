@@ -36,4 +36,16 @@ export class MatchingController {
     const data = await this.matchingService.getResult(id)
     return { code: 200, message: 'ok', data }
   }
+
+  @Get('by-job/:jobDocId')
+  async getByJob(@Param('jobDocId') jobDocId: string) {
+    const data = await this.matchingService.getMatchesByJob(jobDocId)
+    return { code: 200, message: 'ok', data }
+  }
+
+  @Get('by-resume/:resumeDocId')
+  async getByResume(@Param('resumeDocId') resumeDocId: string) {
+    const data = await this.matchingService.getMatchesByResume(resumeDocId)
+    return { code: 200, message: 'ok', data }
+  }
 }
