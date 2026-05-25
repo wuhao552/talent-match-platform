@@ -1,3 +1,8 @@
+/**
+ * @author 应飞帆
+ * @date 2026-05-25
+ * @description 认证 DTO - 新增 ChangePasswordDto 修改密码
+ */
 import { IsString, IsIn, IsOptional, IsEmail, MinLength, MaxLength } from 'class-validator'
 
 export class LoginDto {
@@ -40,4 +45,15 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   companyName?: string
+}
+
+export class ChangePasswordDto {
+  @IsString()
+  @MinLength(4)
+  oldPassword: string
+
+  @IsString()
+  @MinLength(4)
+  @MaxLength(128)
+  newPassword: string
 }
