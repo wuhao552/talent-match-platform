@@ -1,4 +1,9 @@
-import { Injectable, UnauthorizedException, ConflictException } from '@nestjs/common'
+/**
+ * @author 应飞帆
+ * @date 2026-05-25
+ * @description 认证服务 - 新增 changePassword 修改密码方法
+ */
+import { Injectable, UnauthorizedException, ConflictException, BadRequestException } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
@@ -55,6 +60,16 @@ export class AuthService {
     const user = await this.userRepo.findOne({ where: { id: userId } })
     if (!user) throw new UnauthorizedException('用户不存在')
     return { user: this.sanitizeUser(user) }
+  }
+
+  async changePassword(userId: string, oldPassword: string, newPassword: string) {
+    const user = await this.userRepo.findOne({ where: { id: userId } })
+    if (!user) throw new UnauthorizedException('用户不存在')
+    const valid = await bcrypt.compare(oldPassword, user.passwordHash)
+    if (!valid) throw new BadRequestException('原密码错误')
+    user.passwordHash = await bcrypt.hash(newPassword, 10)
+    await this.userRepo.save(user)
+    return { message: '密码修改成功' }
   }
 
   private generateToken(user: User): string {

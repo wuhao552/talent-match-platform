@@ -1,3 +1,8 @@
+/**
+ * @author 应飞帆
+ * @date 2026-05-25
+ * @description 应用主模块 - 注册 AdminModule 管理后台
+ */
 import { Module } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { TypeOrmModule } from '@nestjs/typeorm'
@@ -13,6 +18,7 @@ import { GraphModule } from './modules/graph/graph.module'
 import { MatchingModule } from './modules/matching/matching.module'
 import { LlmModule } from './modules/llm/llm.module'
 import { AgentModule } from './agents/agent.module'
+import { AdminModule } from './modules/admin/admin.module'
 
 @Module({
   imports: [
@@ -43,6 +49,7 @@ import { AgentModule } from './agents/agent.module'
     MatchingModule,
     LlmModule,
     AgentModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

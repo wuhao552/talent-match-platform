@@ -1,3 +1,8 @@
+/**
+ * @author 应飞帆
+ * @date 2026-05-25
+ * @description 用户实体 - 新增 status 字段用于管理员禁用/启用用户
+ */
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -7,6 +12,7 @@ import {
 } from 'typeorm'
 
 export type UserRole = 'individual' | 'enterprise' | 'admin'
+export type UserStatus = 'active' | 'disabled'
 
 @Entity('users')
 export class User {
@@ -21,6 +27,9 @@ export class User {
 
   @Column({ type: 'varchar', length: 20 })
   role: UserRole
+
+  @Column({ type: 'varchar', length: 16, default: 'active' })
+  status: UserStatus
 
   @Column({ nullable: true, length: 128 })
   email: string
