@@ -133,4 +133,8 @@ export const matchingApi = {
   getResults: () => request<ApiResponse<MatchResult[]>>('/matching/results'),
   getResult: (id: string) =>
     request<ApiResponse<MatchResult>>(`/matching/results/${id}`),
+  getByJob: (jobDocId: string) =>
+    request<ApiResponse<MatchResult[]>>(`/matching/by-job/${jobDocId}`),
+  getByResume: (resumeDocId: string) =>
+    request<ApiResponse<MatchResult[]>>(`/matching/by-resume/${resumeDocId}`),
 }

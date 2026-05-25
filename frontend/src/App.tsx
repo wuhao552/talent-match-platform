@@ -9,6 +9,8 @@ import { ResumeUpload } from '@/pages/ResumeUpload'
 import { JobUpload } from '@/pages/JobUpload'
 import { SkillGraph } from '@/pages/SkillGraph'
 import { MatchingResult } from '@/pages/MatchingResult'
+import { ResumeDetail } from '@/pages/ResumeDetail'
+import { JobDetail } from '@/pages/JobDetail'
 import { Profile } from '@/pages/Profile'
 
 function App() {
@@ -31,6 +33,8 @@ function App() {
                   <Route path="/upload/job" element={<JobUpload />} />
                   <Route path="/graph/:docId" element={<SkillGraph />} />
                   <Route path="/matching/:id" element={<MatchingResult />} />
+                  <Route path="/resume/:resumeDocId" element={<ResumeDetail />} />
+                  <Route path="/job/:jobDocId" element={<JobDetail />} />
                   <Route path="/profile" element={<Profile />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Routes>

@@ -2,12 +2,11 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { documentApi, matchingApi } from '@/services/api'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { STATUS_LABEL, STATUS_VARIANT, DOC_TYPE_LABEL, scoreColor } from '@/lib/utils'
-import { toast } from 'sonner'
+import { scoreColor, DOC_TYPE_LABEL, STATUS_LABEL } from '@/lib/utils'
+import { FileText, Briefcase, Upload, ChevronRight } from 'lucide-react'
 import type { Document, MatchResult } from '@/types'
 
 export function Dashboard() {
@@ -16,198 +15,224 @@ export function Dashboard() {
   const [documents, setDocuments] = useState<Document[]>([])
   const [matches, setMatches] = useState<MatchResult[]>([])
   const [loading, setLoading] = useState(true)
-  const [matching, setMatching] = useState(false)
 
   const isIndividual = user?.role === 'individual'
+  const parsedDocs = documents.filter((d) => d.status === 'parsed')
 
   useEffect(() => {
-    documentApi.list()
-      .then((res) => setDocuments(res.data))
-      .catch(() => toast.error('加载文档列表失败'))
-      .finally(() => setLoading(false))
+    Promise.all([
+      documentApi.list().then((r) => setDocuments(r.data)),
+      matchingApi.recommend().then((r) => setMatches(r.data)).catch(() => {}),
+    ]).finally(() => setLoading(false))
   }, [])
 
-  const loadMatches = () => {
-    const hasParsed = documents.some((d) => d.status === 'parsed')
-    if (!hasParsed) return
-    setMatching(true)
-    matchingApi.recommend()
-      .then((res) => setMatches(res.data))
-      .catch(() => {})
-      .finally(() => setMatching(false))
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    )
   }
 
-  useEffect(() => {
-    if (!loading && documents.length > 0) loadMatches()
-  }, [loading, documents.length])
+  // ═══════════════════════════════════════════
+  // Individual: 我的简历
+  // ═══════════════════════════════════════════
+  if (isIndividual) {
+    const myResumes = parsedDocs.filter((d) => d.docType === 'resume')
 
-  const parsedCount = documents.filter((d) => d.status === 'parsed').length
-  const pendingCount = documents.filter((d) => d.status === 'uploaded' || d.status === 'parsing').length
+    return (
+      <div className="mx-auto max-w-4xl space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">我的简历</h1>
+            <p className="text-sm text-muted-foreground">
+              {myResumes.length > 0
+                ? `共 ${myResumes.length} 份简历，点击查看匹配职位`
+                : '上传简历，开始匹配适合您的职位'}
+            </p>
+          </div>
+          <Button onClick={() => navigate('/upload/resume')}>
+            <Upload className="mr-2 h-4 w-4" />
+            上传简历
+          </Button>
+        </div>
+
+        {myResumes.length === 0 ? (
+          <div className="py-20 text-center">
+            <FileText className="mx-auto h-12 w-12 text-muted-foreground/30" />
+            <p className="mt-4 text-lg font-medium">还没有上传简历</p>
+            <p className="text-sm text-muted-foreground">上传简历后，系统将自动匹配职位</p>
+            <Button className="mt-4" onClick={() => navigate('/upload/resume')}>立即上传</Button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {myResumes.map((resume) => {
+              const resumeMatches = matches.filter((m) => m.resumeDocId === resume.id)
+              const parsed = (resume.parsedJson as any)?.structured || {}
+              const topMatch = resumeMatches[0]
+              return (
+                <Card
+                  key={resume.id}
+                  className="cursor-pointer transition-shadow hover:shadow-md"
+                  onClick={() => navigate(`/resume/${resume.id}`)}
+                >
+                  <CardContent className="flex items-center justify-between p-5">
+                    <div className="flex items-center gap-4">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+                        <FileText className="h-6 w-6 text-primary" />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold">
+                          {parsed.name || resume.originalFilename}
+                        </h3>
+                        <p className="text-xs text-muted-foreground">
+                          {[parsed.title, parsed.city].filter(Boolean).join(' · ') || resume.originalFilename}
+                        </p>
+                        {Array.isArray(parsed.skills) && (parsed.skills as string[]).length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {(parsed.skills as string[]).slice(0, 5).map((s, i) => (
+                              <Badge key={i} variant="secondary" className="text-[10px]">{s}</Badge>
+                            ))}
+                            {(parsed.skills as string[]).length > 5 && (
+                              <span className="text-[10px] text-muted-foreground">+{(parsed.skills as string[]).length - 5}</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      {resumeMatches.length > 0 ? (
+                        <>
+                          <div className="text-right">
+                            <p className="text-sm text-muted-foreground">匹配职位</p>
+                            <p className="text-lg font-bold text-primary">{resumeMatches.length}</p>
+                          </div>
+                          {topMatch && (
+                            <div className="hidden sm:block text-right">
+                              <p className="text-xs text-muted-foreground">最佳</p>
+                              <p className="text-sm font-medium truncate max-w-32">{topMatch.jobTitle || topMatch.jobFilename}</p>
+                              <p className={`text-xs font-semibold ${scoreColor(topMatch.overallScore)}`}>
+                                {Math.round(topMatch.overallScore)} 分
+                              </p>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">暂无匹配</p>
+                      )}
+                      <ChevronRight className="h-4 w-4 text-muted-foreground/30" />
+                    </div>
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ═══════════════════════════════════════════
+  // Enterprise: 我的职位
+  // ═══════════════════════════════════════════
+  const myJobs = parsedDocs.filter((d) => d.docType === 'job_description')
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-4xl space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">工作台</h1>
-          <p className="text-muted-foreground">
-            欢迎回来，{user?.username}
-            {isIndividual ? '（个人用户）' : '（企业用户）'}
+          <h1 className="text-2xl font-bold">我的职位</h1>
+          <p className="text-sm text-muted-foreground">
+            {myJobs.length > 0 ? `已发布 ${myJobs.length} 个职位` : '还没有发布职位'}
           </p>
         </div>
-        <Button onClick={() => navigate(isIndividual ? '/upload/resume' : '/upload/job')}>
-          {isIndividual ? '上传简历' : '发布职位'}
+        <Button onClick={() => navigate('/upload/job')}>
+          <Upload className="mr-2 h-4 w-4" />
+          发布新职位
         </Button>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">文档总数</CardTitle>
-          </CardHeader>
-          <CardContent><p className="text-2xl font-bold">{documents.length}</p></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">已解析</CardTitle>
-          </CardHeader>
-          <CardContent><p className="text-2xl font-bold">{parsedCount}</p></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">待处理</CardTitle>
-          </CardHeader>
-          <CardContent><p className="text-2xl font-bold">{pendingCount}</p></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              {isIndividual ? '匹配职位' : '匹配候选人'}
-            </CardTitle>
-          </CardHeader>
-          <CardContent><p className="text-2xl font-bold">{matches.length}</p></CardContent>
-        </Card>
-      </div>
-
-      <Tabs defaultValue="docs">
-        <TabsList>
-          <TabsTrigger value="docs">我的文档</TabsTrigger>
-          <TabsTrigger value="matches">
-            {isIndividual ? '职位推荐' : '候选人推荐'}
-            {matches.length > 0 && (
-              <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 text-[10px] text-primary">{matches.length}</span>
-            )}
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="docs" className="mt-4">
-          {loading ? (
-            <div className="flex items-center justify-center gap-3 py-20">
-              <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-              <span className="text-sm text-muted-foreground">加载中...</span>
-            </div>
-          ) : documents.length === 0 ? (
-            <div className="py-16 text-center">
-              <p className="text-muted-foreground">还没有上传任何文档</p>
-              <Button
-                variant="outline" className="mt-4"
-                onClick={() => navigate(isIndividual ? '/upload/resume' : '/upload/job')}
+      {myJobs.length === 0 ? (
+        <div className="py-20 text-center">
+          <Briefcase className="mx-auto h-12 w-12 text-muted-foreground/30" />
+          <p className="mt-4 text-lg font-medium">还没有发布职位</p>
+          <p className="text-sm text-muted-foreground">发布职位描述后，系统将自动匹配候选人</p>
+          <Button className="mt-4" onClick={() => navigate('/upload/job')}>发布第一个职位</Button>
+        </div>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          {myJobs.map((job) => {
+            const jobMatches = matches.filter((m) => m.jobDocId === job.id)
+            const topCandidate = jobMatches[0]
+            return (
+              <Card
+                key={job.id}
+                className="cursor-pointer transition-shadow hover:shadow-md"
+                onClick={() => navigate(`/job/${job.id}`)}
               >
-                立即上传
-              </Button>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {documents.map((doc) => (
-                <div key={doc.id} className="flex items-center justify-between rounded-lg border p-4 transition-colors hover:bg-muted/30">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium truncate">{doc.originalFilename}</p>
-                      <Badge variant={(STATUS_VARIANT[doc.status] as any) || 'secondary'} className="text-[10px]">
-                        {STATUS_LABEL[doc.status] || doc.status}
-                      </Badge>
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <h3 className="font-semibold truncate">
+                        {(job.parsedJson as any)?.structured?.title || job.originalFilename}
+                      </h3>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {DOC_TYPE_LABEL[job.docType]} · {new Date(job.createdAt).toLocaleDateString('zh-CN')}
+                      </p>
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      {DOC_TYPE_LABEL[doc.docType] || doc.docType} · {new Date(doc.createdAt).toLocaleDateString('zh-CN')}
-                    </p>
+                    <Badge variant="secondary" className="shrink-0 text-[10px]">
+                      {STATUS_LABEL[job.status]}
+                    </Badge>
                   </div>
-                  <div className="ml-4 flex shrink-0 items-center gap-2">
-                    {doc.status === 'parsed' && (
-                      <Button size="sm" variant="outline" onClick={() => navigate(`/graph/${doc.id}`)}>
-                        查看解析
-                      </Button>
-                    )}
-                    {doc.status === 'failed' && (
-                      <Button size="sm" variant="outline" onClick={() => navigate(`/graph/${doc.id}`)}>
-                        查看详情
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </TabsContent>
 
-        <TabsContent value="matches" className="mt-4">
-          {matching ? (
-            <div className="flex items-center justify-center gap-3 py-20">
-              <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-              <span className="text-sm text-muted-foreground">匹配计算中...</span>
-            </div>
-          ) : matches.length === 0 ? (
-            <div className="py-16 text-center">
-              <p className="text-muted-foreground">
-                {parsedCount === 0 ? '请先上传并解析文档' : '暂无匹配结果'}
-              </p>
-              {parsedCount === 0 && (
-                <Button variant="outline" className="mt-4" onClick={() => navigate(isIndividual ? '/upload/resume' : '/upload/job')}>
-                  立即上传
-                </Button>
-              )}
-            </div>
-          ) : (
-            <div className="grid gap-4 md:grid-cols-2">
-              {matches.map((m) => (
-                <Card key={m.id} className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => navigate(`/matching/${m.id}`)}>
-                  <CardHeader className="pb-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <CardTitle className="text-base truncate">
-                          {isIndividual ? (m.jobTitle || m.jobFilename) : (m.candidateName || '未知')}
-                        </CardTitle>
-                        {isIndividual && m.companyName && (
-                          <p className="mt-0.5 text-xs text-muted-foreground">{m.companyName}</p>
-                        )}
-                        {!isIndividual && m.candidateCity && (
-                          <p className="mt-0.5 text-xs text-muted-foreground">{m.candidateCity}</p>
-                        )}
+                  {jobMatches.length > 0 && topCandidate ? (
+                    <div className="mt-3 rounded-lg bg-muted/50 p-3">
+                      <p className="text-xs text-muted-foreground">
+                        匹配 <strong>{jobMatches.length}</strong> 位候选人
+                      </p>
+                      <div className="mt-1.5 flex items-center justify-between">
+                        <span className="text-sm font-medium">
+                          {topCandidate.candidateName || '未知'} 最佳匹配
+                        </span>
+                        <span className={`text-sm font-bold ${scoreColor(topCandidate.overallScore)}`}>
+                          {Math.round(topCandidate.overallScore)} 分
+                        </span>
                       </div>
-                      <div className="text-center">
-                        <p className={`text-xl font-bold tabular-nums ${scoreColor(m.overallScore)}`}>
-                          {Math.round(m.overallScore)}
-                        </p>
-                        <p className="text-[10px] text-muted-foreground">分</p>
-                      </div>
+                      {topCandidate.matchDetails?.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {topCandidate.matchDetails.slice(0, 3).map((d, i) => (
+                            <Badge key={i} variant="outline" className="text-[10px]">{d.skillName}</Badge>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  </CardHeader>
-                  <CardContent>
-                    {m.matchDetails && m.matchDetails.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        {m.matchDetails.slice(0, 6).map((d, i) => (
-                          <Badge key={i} variant="secondary" className="text-[10px]">{d.skillName}</Badge>
-                        ))}
-                        {m.matchDetails.length > 6 && (
-                          <span className="text-[10px] text-muted-foreground">+{m.matchDetails.length - 6}</span>
-                        )}
-                      </div>
+                  ) : job.status === 'parsed' ? (
+                    <div className="mt-3 rounded-lg bg-muted/30 p-3 text-center">
+                      <p className="text-xs text-muted-foreground">暂无匹配候选人</p>
+                    </div>
+                  ) : (
+                    <div className="mt-3 rounded-lg bg-muted/30 p-3 text-center">
+                      <p className="text-xs text-muted-foreground">解析中，完成后自动匹配...</p>
+                    </div>
+                  )}
+
+                  <div className="mt-3">
+                    {jobMatches.length > 0 ? (
+                      <Button size="sm" className="w-full" onClick={(e) => { e.stopPropagation(); navigate(`/job/${job.id}`) }}>
+                        查看 {jobMatches.length} 位候选人
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="outline" className="w-full" onClick={(e) => { e.stopPropagation(); navigate(`/graph/${job.id}`) }}>
+                        查看解析详情
+                      </Button>
                     )}
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
-        </TabsContent>
-      </Tabs>
+                  </div>
+                </CardContent>
+              </Card>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
