@@ -15,6 +15,7 @@ export class MatchingController {
     const data = await this.matchingService.calculateMatch(
       body.resumeDocId,
       body.jobDocId,
+      { useLLM: true },
     )
     return { code: 200, message: '匹配完成', data }
   }

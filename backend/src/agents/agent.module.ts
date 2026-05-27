@@ -15,6 +15,6 @@ import { SkillModule } from '../modules/skill/skill.module'
     GraphBuilderAgent,
     OrchestratorAgent,
   ],
-  exports: [OrchestratorAgent],
+  exports: [OrchestratorAgent, GraphBuilderAgent],
 })
 export class AgentModule {}

@@ -15,21 +15,25 @@ export class DocumentParserAgent implements IAgent {
   }
 
   async execute(context: AgentContext): Promise<AgentResult> {
-    const { filePath, fileFormat } = context.input as {
-      filePath: string
-      fileFormat: string
+    const { filePath, fileFormat, docType, rawText } = context.input as {
+      filePath?: string
+      fileFormat?: string
+      docType?: string
+      rawText?: string
     }
 
-    // Step 1: Extract raw text from file
-    let parsedText = ''
-    try {
-      parsedText = await this.extractText(filePath, fileFormat)
-    } catch (err) {
-      return {
-        success: false,
-        data: {},
-        summary: '文件读取失败',
-        error: err instanceof Error ? err.message : '无法读取文件',
+    // Step 1: Extract raw text from file (or use provided text)
+    let parsedText = rawText || ''
+    if (!parsedText) {
+      try {
+        parsedText = await this.extractText(filePath!, fileFormat!)
+      } catch (err) {
+        return {
+          success: false,
+          data: {},
+          summary: '文件读取失败',
+          error: err instanceof Error ? err.message : '无法读取文件',
+        }
       }
     }
 
@@ -42,10 +46,12 @@ export class DocumentParserAgent implements IAgent {
       }
     }
 
-    // Step 2: Structured parsing via LLM
+    // Step 2: Structured parsing via LLM — 企业端/个人端使用不同提示词
     let parsedJson: Record<string, unknown> = {}
     try {
-      const llmResult = await this.llmService.parseDocument(parsedText, context.onChunk)
+      const llmResult = docType === 'job_description'
+        ? await this.llmService.parseJobDescription(parsedText, context.onChunk)
+        : await this.llmService.parseDocument(parsedText, context.onChunk)
       parsedJson = llmResult.parsed
 
       return {
@@ -72,7 +78,7 @@ export class DocumentParserAgent implements IAgent {
     }
   }
 
-  private async extractText(filePath: string, fileFormat: string): Promise<string> {
+  async extractText(filePath: string, fileFormat: string): Promise<string> {
     if (fileFormat === 'pdf') {
       const pdfParse = require('pdf-parse')
       const buffer = fs.readFileSync(filePath)

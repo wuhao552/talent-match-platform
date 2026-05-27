@@ -45,6 +45,9 @@ export class DocumentSkill {
   @Column({ name: 'extraction_method', length: 16, nullable: true })
   extractionMethod: string  // 'llm' | 'rule'
 
+  @Column({ name: 'category', type: 'varchar', length: 64, nullable: true })
+  category: string
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date
 }

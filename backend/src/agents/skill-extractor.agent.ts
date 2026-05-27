@@ -14,7 +14,7 @@ export class SkillExtractorAgent implements IAgent {
   }
 
   async execute(context: AgentContext): Promise<AgentResult> {
-    const { parsedText } = context.input as { parsedText: string }
+    const { parsedText, docType } = context.input as { parsedText: string; docType?: string }
 
     if (!parsedText || parsedText.trim().length === 0) {
       return {
@@ -25,7 +25,10 @@ export class SkillExtractorAgent implements IAgent {
       }
     }
 
-    const result = await this.llmService.extractSkills(parsedText, context.onChunk)
+    // 企业端/个人端使用不同提示词提取技能
+    const result = docType === 'job_description'
+      ? await this.llmService.extractJobSkills(parsedText, context.onChunk)
+      : await this.llmService.extractSkills(parsedText, context.onChunk)
 
     return {
       success: true,

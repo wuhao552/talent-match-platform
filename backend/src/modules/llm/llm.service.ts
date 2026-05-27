@@ -87,9 +87,6 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     }
   }
 
-  /**
-   * 文档结构化解析 — 用 flash 模型
-   */
   async parseDocument(
     text: string,
     onChunk?: (token: string) => void,
@@ -102,7 +99,6 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
 - city: 所在城市
 - title: 当前职位/标题
 - summary: 个人简介或职位概述(一段话)
-- skills: 技能列表(字符串数组)
 - education: 教育背景(数组,每项含school/major/degree/year)
 - experience: 工作经历(数组,每项含company/title/duration/description)
 如果没有提取到信息，对应字段为null`
@@ -139,6 +135,132 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
         userMessage,
         rawResponse,
         parsedResult: parsed,
+        success: true,
+        tokensUsed: undefined,
+        latencyMs,
+      },
+    }
+  }
+
+  /**
+   * 岗位描述解析 — 企业端专用，提取字段与简历完全不同
+   */
+  async parseJobDescription(
+    text: string,
+    onChunk?: (token: string) => void,
+  ): Promise<{ parsed: Record<string, unknown>; detail: LlmCallDetail }> {
+    const systemPrompt = `你是一个招聘岗位分析专家。从给定的岗位描述(JD)中提取结构化信息。
+返回纯JSON对象，包含以下字段：
+- companyName: 公司名称
+- companyIndustry: 所属行业
+- companySize: 公司规模(如"50-200人"、"1000人以上")
+- jobTitle: 岗位名称
+- department: 所属部门
+- location: 工作地点(城市/区域)
+- salaryRange: 薪资范围(如"15k-25k"、"面议")
+- jobType: 工作类型(全职/兼职/实习/外包)
+- experienceRequired: 经验要求(如"1-3年"、"5年以上")
+- educationRequired: 学历要求(如"本科"、"硕士及以上")
+- responsibilities: 岗位职责(字符串数组，每项一句话)
+- requirements: 任职要求(字符串数组，每项一句话)
+- benefits: 福利待遇(字符串数组)
+- summary: 岗位概述(一段话)
+如果没有提取到信息，对应字段为null`
+
+    const userMessage = `请解析以下岗位描述：\n\n${text.slice(0, 8000)}`
+
+    const startTime = Date.now()
+    let rawResponse: string
+
+    if (onChunk) {
+      rawResponse = ''
+      for await (const chunk of this.callLLMStream(systemPrompt, userMessage, this.flashModel)) {
+        if (!chunk.done) onChunk(chunk.token)
+        rawResponse = chunk.fullText
+      }
+    } else {
+      rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+    }
+
+    const latencyMs = Date.now() - startTime
+
+    const jsonMatch = rawResponse.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      throw new Error(`LLM 岗位解析返回格式无法解析，原始响应: ${rawResponse.slice(0, 300)}`)
+    }
+
+    const parsed = JSON.parse(jsonMatch[0])
+
+    return {
+      parsed,
+      detail: {
+        model: this.flashModel,
+        systemPrompt,
+        userMessage,
+        rawResponse,
+        parsedResult: parsed,
+        success: true,
+        tokensUsed: undefined,
+        latencyMs,
+      },
+    }
+  }
+
+  /**
+   * 岗位技能提取 — 企业端专用，提取任职要求中的技能及期望熟练度
+   */
+  async extractJobSkills(
+    text: string,
+    onChunk?: (token: string) => void,
+  ): Promise<{ skills: ExtractedSkill[]; detail: LlmCallDetail }> {
+    const systemPrompt = `你是一个招聘需求分析专家。从岗位描述中提取所有要求/期望的技能，并评估该岗位对每项技能的熟练度要求。
+返回纯JSON数组，格式：[{"name":"技能名","proficiency":"熟练度"}]
+proficiency必须是以下之一：beginner, intermediate, advanced, expert
+注意：请区分"必备技能"和"加分技能"——必备技能通常对应advanced/expert，加分技能通常对应beginner/intermediate。
+如果岗位描述中没有明确的技能要求，返回空数组 []`
+
+    const userMessage = `请从以下岗位描述中提取技能要求：\n\n${text.slice(0, 8000)}`
+
+    const startTime = Date.now()
+    let rawResponse: string
+
+    if (onChunk) {
+      rawResponse = ''
+      for await (const chunk of this.callLLMStream(systemPrompt, userMessage, this.flashModel)) {
+        if (!chunk.done) onChunk(chunk.token)
+        rawResponse = chunk.fullText
+      }
+    } else {
+      rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+    }
+
+    const latencyMs = Date.now() - startTime
+
+    const jsonMatch = rawResponse.match(/\[[\s\S]*\]/)
+    if (!jsonMatch) {
+      throw new Error(`LLM 岗位技能提取返回格式无法解析，原始响应: ${rawResponse.slice(0, 300)}`)
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as Array<{
+      name: string
+      proficiency: string
+    }>
+
+    const skills: ExtractedSkill[] = parsed.map((s) => ({
+      name: s.name,
+      proficiency: this.validateProficiency(s.proficiency),
+      confidence: 0.95,
+      sourceText: '',
+    }))
+
+    return {
+      skills,
+      detail: {
+        model: this.flashModel,
+        systemPrompt,
+        userMessage,
+        rawResponse,
+        parsedResult: { skills },
         success: true,
         tokensUsed: undefined,
         latencyMs,
@@ -236,6 +358,47 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     } finally {
       clearTimeout(timeout)
     }
+  }
+
+  async callLLMForJson(
+    systemPrompt: string,
+    userMessage: string,
+    model?: string,
+  ): Promise<Record<string, unknown>> {
+    const raw = await this.callLLM(systemPrompt, userMessage, model || this.flashModel)
+    const jsonMatch = raw.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      throw new Error(`LLM JSON 解析失败，原始响应: ${raw.slice(0, 300)}`)
+    }
+    return JSON.parse(jsonMatch[0])
+  }
+
+  /**
+   * Streaming version: emits tokens via onChunk, then returns parsed JSON array.
+   */
+  async callLLMForJsonArrayStream(
+    systemPrompt: string,
+    userMessage: string,
+    onChunk?: (token: string) => void,
+    model?: string,
+  ): Promise<Record<string, unknown>[]> {
+    const startTime = Date.now()
+    let rawResponse = ''
+
+    if (onChunk) {
+      for await (const chunk of this.callLLMStream(systemPrompt, userMessage, model || this.flashModel)) {
+        if (!chunk.done) onChunk(chunk.token)
+        rawResponse = chunk.fullText
+      }
+    } else {
+      rawResponse = await this.callLLM(systemPrompt, userMessage, model || this.flashModel)
+    }
+
+    const jsonMatch = rawResponse.match(/\[[\s\S]*\]/)
+    if (!jsonMatch) {
+      throw new Error(`LLM JSON 数组解析失败，原始响应: ${rawResponse.slice(0, 300)}`)
+    }
+    return JSON.parse(jsonMatch[0]) as Record<string, unknown>[]
   }
 
   /**

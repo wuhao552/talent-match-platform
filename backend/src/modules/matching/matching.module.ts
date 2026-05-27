@@ -8,11 +8,13 @@ import { User } from '../user/user.entity'
 import { MatchingController } from './matching.controller'
 import { MatchingService } from './matching.service'
 import { GraphModule } from '../graph/graph.module'
+import { LlmModule } from '../llm/llm.module'
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([MatchResult, Document, DocumentSkill, Skill, User]),
     GraphModule,
+    LlmModule,
   ],
   controllers: [MatchingController],
   providers: [MatchingService],

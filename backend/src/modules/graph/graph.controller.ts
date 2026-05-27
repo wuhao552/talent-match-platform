@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common'
+import { Controller, Get, Param, Query, UseGuards, Post, Body } from '@nestjs/common'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { Neo4jService } from './neo4j.service'
 
@@ -24,6 +24,15 @@ export class GraphController {
     const data = await this.neo4j.getSkillNetwork(
       skillId ? parseInt(skillId) : undefined,
     )
+    return { code: 200, message: 'ok', data }
+  }
+
+  @Post('cooccurrence-batch')
+  async getBatchCooccurrence(@Body() body: { skillIds: number[] }) {
+    if (!body.skillIds || body.skillIds.length < 2) {
+      return { code: 200, message: 'ok', data: [] }
+    }
+    const data = await this.neo4j.batchGetCooccurrences(body.skillIds, body.skillIds)
     return { code: 200, message: 'ok', data }
   }
 }

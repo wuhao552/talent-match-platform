@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common'
 import { DocumentParserAgent } from './document-parser.agent'
 import { SkillExtractorAgent } from './skill-extractor.agent'
-import { GraphBuilderAgent } from './graph-builder.agent'
 import { SkillMatcherService } from '../modules/skill/skill-matcher.service'
 import type { AgentResult } from './agent.interface'
 
@@ -22,7 +21,6 @@ export class OrchestratorAgent {
   constructor(
     private docParser: DocumentParserAgent,
     private skillExtractor: SkillExtractorAgent,
-    private graphBuilder: GraphBuilderAgent,
     private skillMatcher: SkillMatcherService,
   ) {}
 
@@ -32,9 +30,6 @@ export class OrchestratorAgent {
     return this.runParsePipelineStream(document, undefined)
   }
 
-  /**
-   * Full pipeline with streaming progress via callback.
-   */
   async runParsePipelineStream(
     document: {
       id: string; userId: string; docType: string; filePath: string; fileFormat: string
@@ -45,61 +40,90 @@ export class OrchestratorAgent {
     const sessionId = `parse-${document.id}`
     const emit = (step: PipelineStep) => onProgress?.(step)
 
-    // Step 1: Document Parser Agent
-    emit({ agent: 'document_parser', status: 'running', summary: '正在读取并解析文档...', timestamp: Date.now() })
-    const parseResult = await this.docParser.execute({
-      sessionId, userId: document.userId,
-      input: { filePath: document.filePath, fileFormat: document.fileFormat },
-      onChunk: onChunk ? (t: string) => onChunk('document_parser', t) : undefined,
-    })
+    // Step 0: Extract raw text (prerequisite for both agents)
+    emit({ agent: 'text_extractor', status: 'running', summary: '正在读取文档文本...', timestamp: Date.now() })
 
-    const parsedText = parseResult.data['parsedText'] as string
-    const parsedJson = parseResult.data['parsedJson'] as Record<string, unknown> | null
-    const llmParseDetail = parseResult.data['llmParseDetail']
-
-    if (parseResult.success && parsedText) {
-      emit({
-        agent: 'document_parser', status: 'done',
-        summary: `文档解析完成: 提取 ${parsedText.length} 字符`,
-        data: {
-          textLength: parsedText.length,
-          textPreview: parsedText.slice(0, 200),
-          structured: parsedJson,
-          ...(llmParseDetail ? {
-            model: (llmParseDetail as any).model,
-            latencyMs: (llmParseDetail as any).latencyMs,
-            rawResponse: (llmParseDetail as any).rawResponse,
-          } : {}),
-        },
-        timestamp: Date.now(),
-      })
-    } else {
-      emit({ agent: 'document_parser', status: 'error', summary: '文档解析失败', error: parseResult.error, timestamp: Date.now() })
-      return { success: false, data: {}, summary: parseResult.summary, error: parseResult.error }
+    let parsedText: string
+    try {
+      parsedText = await this.docParser.extractText(document.filePath, document.fileFormat)
+    } catch (err) {
+      emit({ agent: 'text_extractor', status: 'error', summary: '文档读取失败', error: (err as Error).message, timestamp: Date.now() })
+      return { success: false, data: {}, summary: '文档读取失败', error: (err as Error).message }
     }
 
-    // Step 2: Skill Extractor Agent
+    if (!parsedText || parsedText.trim().length === 0) {
+      emit({ agent: 'text_extractor', status: 'error', summary: '文档内容为空', error: '文件解析后无文本内容', timestamp: Date.now() })
+      return { success: false, data: {}, summary: '文档内容为空', error: '文件解析后无文本内容' }
+    }
+
+    emit({
+      agent: 'text_extractor', status: 'done',
+      summary: `文本提取完成: ${parsedText.length} 字符`,
+      data: { textLength: parsedText.length, textPreview: parsedText.slice(0, 200) },
+      timestamp: Date.now(),
+    })
+
+    // Step 1: Run DocumentParser and SkillExtractor in parallel
+    emit({ agent: 'document_parser', status: 'running', summary: '正在结构化解析文档...', timestamp: Date.now() })
+    emit({ agent: 'skill_extractor', status: 'running', summary: '正在提取技能标签...', timestamp: Date.now() })
+
+    const [parseSettled, extractSettled] = await Promise.allSettled([
+      this.docParser.execute({
+        sessionId, userId: document.userId,
+        input: { rawText: parsedText, docType: document.docType },
+        onChunk: onChunk ? (t: string) => onChunk('document_parser', t) : undefined,
+      }),
+      this.skillExtractor.execute({
+        sessionId, userId: document.userId,
+        input: { parsedText, docType: document.docType },
+        onChunk: onChunk ? (t: string) => onChunk('skill_extractor', t) : undefined,
+      }),
+    ])
+
+    // Process DocumentParser result
+    let parseResult: AgentResult
+    if (parseSettled.status === 'fulfilled') {
+      parseResult = parseSettled.value
+      const parsedJson = parseResult.data['parsedJson'] as Record<string, unknown> | null
+      const llmParseDetail = parseResult.data['llmParseDetail']
+
+      if (parseResult.success) {
+        emit({
+          agent: 'document_parser', status: 'done',
+          summary: `文档结构化解析完成`,
+          data: {
+            structured: parsedJson,
+            ...(llmParseDetail ? {
+              model: (llmParseDetail as any).model,
+              latencyMs: (llmParseDetail as any).latencyMs,
+              rawResponse: (llmParseDetail as any).rawResponse,
+            } : {}),
+          },
+          timestamp: Date.now(),
+        })
+      } else {
+        emit({ agent: 'document_parser', status: 'error', summary: '文档解析失败', error: parseResult.error, timestamp: Date.now() })
+      }
+    } else {
+      parseResult = { success: false, data: {}, summary: '文档解析异常', error: parseSettled.reason?.message || String(parseSettled.reason) }
+      emit({ agent: 'document_parser', status: 'error', summary: '文档解析异常', error: parseResult.error, timestamp: Date.now() })
+    }
+
+    // Process SkillExtractor result
     let extractedSkills: Array<{ name: string; proficiency: string }> = []
     let skillLlmDetail = null
 
-    emit({ agent: 'skill_extractor', status: 'running', summary: '正在调用大模型提取技能标签...', timestamp: Date.now() })
-
-    try {
-      const extractResult = await this.skillExtractor.execute({
-        sessionId, userId: document.userId,
-        input: { parsedText },
-        onChunk: onChunk ? (t: string) => onChunk('skill_extractor', t) : undefined,
-      })
-
+    if (extractSettled.status === 'fulfilled') {
+      const extractResult = extractSettled.value
       if (extractResult.success) {
         extractedSkills = (extractResult.data['skills'] as any[]) || []
         skillLlmDetail = extractResult.data['llmDetail']
         emit({
           agent: 'skill_extractor', status: 'done',
-          summary: `大模型提取 ${extractedSkills.length} 个技能标签`,
+          summary: `提取 ${extractedSkills.length} 个技能标签`,
           data: {
             skillCount: extractedSkills.length,
-            skills: extractedSkills.slice(0, 20).map((s: any) => ({ name: s.name, proficiency: s.proficiency })),
+            skills: extractedSkills.map((s: any) => ({ name: s.name, proficiency: s.proficiency })),
             ...(skillLlmDetail ? {
               model: (skillLlmDetail as any).model,
               latencyMs: (skillLlmDetail as any).latencyMs,
@@ -108,43 +132,45 @@ export class OrchestratorAgent {
           },
           timestamp: Date.now(),
         })
+      } else {
+        emit({ agent: 'skill_extractor', status: 'error', summary: '技能提取失败', error: extractResult.error, timestamp: Date.now() })
       }
-    } catch (err) {
-      emit({ agent: 'skill_extractor', status: 'error', summary: '技能提取失败', error: (err as Error).message, timestamp: Date.now() })
+    } else {
+      emit({ agent: 'skill_extractor', status: 'error', summary: '技能提取异常', error: extractSettled.reason?.message || String(extractSettled.reason), timestamp: Date.now() })
     }
 
-    // Step 3: Map extracted names to canonical skill IDs
+    // Step 2: Map extracted names to canonical skill IDs via string matching
     const mappedSkills: { skillId: number; proficiency: string; name: string }[] = []
+    const seenSkillIds = new Set<number>()
+    const matchedNames = new Set<string>()
     for (const s of extractedSkills) {
       const match = this.skillMatcher.match(s.name)
       if (match) {
+        matchedNames.add(s.name)
+        if (seenSkillIds.has(match.id)) continue
+        seenSkillIds.add(match.id)
         mappedSkills.push({ skillId: match.id, proficiency: s.proficiency, name: match.name })
       }
     }
-
-    let graphResult: AgentResult = { success: true, data: {}, summary: '' }
-    if (mappedSkills.length > 0) {
-      emit({ agent: 'graph_builder', status: 'running', summary: `正在构建知识图谱 (${mappedSkills.length} 个节点)...`, timestamp: Date.now() })
-
-      graphResult = await this.graphBuilder.execute({
-        sessionId, userId: document.userId,
-        input: { documentId: document.id, docType: document.docType, skills: mappedSkills, userId: document.userId },
-      })
-
-      emit({
-        agent: 'graph_builder', status: 'done',
-        summary: `知识图谱构建完成: ${mappedSkills.length} 个技能关系已写入 Neo4j`,
-        data: { nodeCount: mappedSkills.length },
-        timestamp: Date.now(),
-      })
-    } else {
-      emit({ agent: 'graph_builder', status: 'done', summary: '无技能数据，跳过图谱构建', timestamp: Date.now() })
-    }
+    const unmatchedSkills = extractedSkills
+      .filter((s) => !matchedNames.has(s.name))
+      .map((s) => ({ name: s.name, proficiency: s.proficiency }))
 
     return {
-      success: true,
-      data: { parsedText, parsedJson: parsedJson || {}, llmParseDetail, extractedSkills, skillLlmDetail, mappedSkills, graphResult },
-      summary: [parseResult.summary, `技能提取: ${extractedSkills.length} 个`, graphResult.summary].join(' | '),
+      success: parseResult.success || extractedSkills.length > 0,
+      data: {
+        parsedText,
+        parsedJson: parseResult.data['parsedJson'] || {},
+        llmParseDetail: parseResult.data['llmParseDetail'],
+        extractedSkills,
+        skillLlmDetail,
+        mappedSkills,
+        unmatchedSkills,
+      },
+      summary: [
+        parseResult.summary,
+        `技能提取: ${extractedSkills.length} 个 (匹配 ${mappedSkills.length} 个)`,
+      ].join(' | '),
     }
   }
 }

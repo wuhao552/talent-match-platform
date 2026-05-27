@@ -5,7 +5,11 @@ import { extname } from 'path'
 import { Document, DocType, FileFormat } from './document.entity'
 import { DocumentSkill } from '../skill/document-skill.entity'
 import { Skill } from '../skill/skill.entity'
+import { MatchResult } from '../matching/match-result.entity'
 import { OrchestratorAgent, type ProgressCallback } from '../../agents/orchestrator.agent'
+import { GraphBuilderAgent } from '../../agents/graph-builder.agent'
+import { Neo4jService } from '../graph/neo4j.service'
+import { SkillSeedService } from '../skill/skill-seed.service'
 import type { AgentResult } from '../../agents/agent.interface'
 
 function decodeFileName(name: string): string {
@@ -25,7 +29,12 @@ export class DocumentService {
     private dsRepo: Repository<DocumentSkill>,
     @InjectRepository(Skill)
     private skillRepo: Repository<Skill>,
+    @InjectRepository(MatchResult)
+    private matchRepo: Repository<MatchResult>,
     private orchestrator: OrchestratorAgent,
+    private graphBuilder: GraphBuilderAgent,
+    private neo4j: Neo4jService,
+    private skillSeedService: SkillSeedService,
   ) {}
 
   async create(file: Express.Multer.File, docType: DocType, userId: string): Promise<Document> {
@@ -69,6 +78,16 @@ export class DocumentService {
   async delete(id: string, userId: string): Promise<void> {
     const doc = await this.findById(id)
     if (doc.userId !== userId) throw new NotFoundException('无权操作')
+
+    // Delete related match results (FKs to this document)
+    await this.matchRepo.delete({ resumeDocId: id })
+    await this.matchRepo.delete({ jobDocId: id })
+
+    // Delete Neo4j nodes (job positions reference documentId)
+    if (doc.docType === 'job_description') {
+      await this.neo4j.deleteJobPosition(id).catch(() => {})
+    }
+
     await this.docRepo.remove(doc)
   }
 
@@ -110,6 +129,8 @@ export class DocumentService {
 
     doc.parsedJson = {
       structured: structuredInfo || null,
+      unmatchedSkills: (result.data['unmatchedSkills'] as any[]) || [],
+      pipeline: (result.data['pipelineSteps'] as any[]) || [],
       llmCalls: {
         documentParse: llmParseDetail ? {
           model: (llmParseDetail as any).model,
@@ -132,13 +153,25 @@ export class DocumentService {
 
     await this.dsRepo.delete({ documentId: doc.id })
 
+    const savedSkillIds = new Set<number>()
     for (let i = 0; i < mappedSkills.length; i++) {
       const ms = mappedSkills[i]
+      // Skip if this skillId already saved for this document (belt-and-suspenders dedup)
+      if (savedSkillIds.has(ms.skillId)) continue
+      savedSkillIds.add(ms.skillId)
       const es = skills[i] as any
       let skill = await this.skillRepo.findOne({ where: { id: ms.skillId } })
       if (!skill) {
-        skill = this.skillRepo.create({ id: ms.skillId, name: es?.name })
+        const skillName = es?.name || ms.name || ''
+        skill = this.skillRepo.create({
+          id: ms.skillId,
+          name: skillName,
+          category: this.skillSeedService.inferCategory(skillName) || undefined,
+        } as Skill)
         await this.skillRepo.save(skill)
+      } else if (!skill.category) {
+        skill.category = this.skillSeedService.inferCategory(skill.name || '') || undefined as any
+        if (skill.category) await this.skillRepo.save(skill)
       }
       const ds = this.dsRepo.create({
         documentId: doc.id, skillId: ms.skillId,
@@ -147,10 +180,28 @@ export class DocumentService {
         confidence: es?.confidence || 0.95,
         sourceText: es?.sourceText || '',
         extractionMethod: 'llm',
+        category: this.skillSeedService.inferCategory(es?.name || ms.name || '') || null as any,
       })
       await this.dsRepo.save(ds)
     }
     await this.docRepo.save(doc)
+
+    // Fire-and-forget: build Neo4j graph for resumes only (Person skill graph)
+    if (mappedSkills.length > 0 && doc.docType === 'resume') {
+      this.graphBuilder.execute({
+        sessionId: `graph-${doc.id}`, userId: doc.userId,
+        input: { documentId: doc.id, docType: doc.docType, skills: mappedSkills, userId: doc.userId },
+      }).catch((err) => console.error(`Graph build failed for ${doc.id}:`, err.message))
+    }
+
+    // Fire-and-forget: invalidate stale match results (don't block parse flow)
+    this.matchRepo
+      .createQueryBuilder()
+      .update()
+      .set({ staleAt: () => 'NOW()' })
+      .where('resumeDocId = :id OR jobDocId = :id', { id: doc.id })
+      .execute()
+      .catch((err) => console.error(`[Document] Stale invalidation failed for ${doc.id}:`, err.message))
   }
 
   async getDocumentSkills(documentId: string): Promise<DocumentSkill[]> {
