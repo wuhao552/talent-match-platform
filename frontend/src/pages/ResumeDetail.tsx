@@ -5,7 +5,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { scoreColor } from '@/lib/utils'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Activity } from 'lucide-react'
 import type { Document, MatchResult } from '@/types'
 
 export function ResumeDetail() {
@@ -40,12 +40,16 @@ export function ResumeDetail() {
         <Button variant="ghost" size="sm" onClick={() => navigate('/dashboard')}>
           <ChevronLeft className="h-4 w-4" />
         </Button>
-        <div>
+        <div className="flex-1">
           <h1 className="text-xl font-bold">{structured.name || resume.originalFilename}</h1>
           <p className="text-sm text-muted-foreground">
             {[structured.title, structured.city, structured.email].filter(Boolean).join(' · ') || '个人简历'}
           </p>
         </div>
+        <Button variant="outline" size="sm" onClick={() => navigate(`/graph/${resume.id}`)}>
+          <Activity className="mr-1.5 h-3.5 w-3.5" />
+          解析过程
+        </Button>
       </div>
 
       {/* Resume fields */}

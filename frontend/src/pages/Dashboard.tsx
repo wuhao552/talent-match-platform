@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { documentApi, matchingApi } from '@/services/api'
@@ -6,7 +6,8 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { scoreColor, DOC_TYPE_LABEL, STATUS_LABEL } from '@/lib/utils'
-import { FileText, Briefcase, Upload, ChevronRight } from 'lucide-react'
+import { FileText, Briefcase, Upload, ChevronRight, Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
 import type { Document, MatchResult } from '@/types'
 
 export function Dashboard() {
@@ -17,14 +18,64 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true)
 
   const isIndividual = user?.role === 'individual'
-  const parsedDocs = documents.filter((d) => d.status === 'parsed')
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const fetchData = async () => {
+    try {
+      const [docRes, matchRes] = await Promise.all([
+        documentApi.list(),
+        matchingApi.recommend().catch(() => ({ data: [] as MatchResult[] })),
+      ])
+      setDocuments(docRes.data)
+      setMatches(matchRes.data)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    Promise.all([
-      documentApi.list().then((r) => setDocuments(r.data)),
-      matchingApi.recommend().then((r) => setMatches(r.data)).catch(() => {}),
-    ]).finally(() => setLoading(false))
+    fetchData()
   }, [])
+
+  // Auto-poll while any document is still parsing
+  useEffect(() => {
+    const hasPending = documents.some((d) => d.status === 'uploaded' || d.status === 'parsing')
+    if (hasPending && !intervalRef.current) {
+      intervalRef.current = setInterval(() => {
+        documentApi.list().then((r) => {
+          setDocuments(r.data)
+          const stillPending = r.data.some((d) => d.status === 'uploaded' || d.status === 'parsing')
+          if (!stillPending && intervalRef.current) {
+            clearInterval(intervalRef.current)
+            intervalRef.current = null
+            // Refresh matches when parsing is done
+            matchingApi.recommend().then((m) => setMatches(m.data)).catch(() => {})
+          }
+        })
+      }, 3000)
+    }
+    if (!hasPending && intervalRef.current) {
+      clearInterval(intervalRef.current)
+      intervalRef.current = null
+    }
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
+    }
+  }, [documents])
+
+  const handleDelete = async (id: string, filename: string) => {
+    if (!window.confirm(`确定要删除「${filename}」吗？此操作不可撤销。`)) return
+    try {
+      await documentApi.delete(id)
+      toast.success('删除成功')
+      setDocuments((prev) => prev.filter((d) => d.id !== id))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '删除失败')
+    }
+  }
 
   if (loading) {
     return (
@@ -38,7 +89,7 @@ export function Dashboard() {
   // Individual: 我的简历
   // ═══════════════════════════════════════════
   if (isIndividual) {
-    const myResumes = parsedDocs.filter((d) => d.docType === 'resume')
+    const myResumes = documents.filter((d) => d.docType === 'resume')
 
     return (
       <div className="mx-auto max-w-4xl space-y-6">
@@ -70,25 +121,32 @@ export function Dashboard() {
               const resumeMatches = matches.filter((m) => m.resumeDocId === resume.id)
               const parsed = (resume.parsedJson as any)?.structured || {}
               const topMatch = resumeMatches[0]
+              const isPending = resume.status === 'uploaded' || resume.status === 'parsing'
               return (
                 <Card
                   key={resume.id}
                   className="cursor-pointer transition-shadow hover:shadow-md"
-                  onClick={() => navigate(`/resume/${resume.id}`)}
+                  onClick={() => navigate(isPending ? `/graph/${resume.id}` : `/resume/${resume.id}`)}
                 >
                   <CardContent className="flex items-center justify-between p-5">
                     <div className="flex items-center gap-4">
                       <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-                        <FileText className="h-6 w-6 text-primary" />
+                        {isPending ? (
+                          <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                        ) : (
+                          <FileText className="h-6 w-6 text-primary" />
+                        )}
                       </div>
                       <div>
                         <h3 className="font-semibold">
                           {parsed.name || resume.originalFilename}
                         </h3>
                         <p className="text-xs text-muted-foreground">
-                          {[parsed.title, parsed.city].filter(Boolean).join(' · ') || resume.originalFilename}
+                          {isPending
+                            ? '正在解析中...'
+                            : [parsed.title, parsed.city].filter(Boolean).join(' · ') || resume.originalFilename}
                         </p>
-                        {Array.isArray(parsed.skills) && (parsed.skills as string[]).length > 0 && (
+                        {!isPending && Array.isArray(parsed.skills) && (parsed.skills as string[]).length > 0 && (
                           <div className="mt-1 flex flex-wrap gap-1">
                             {(parsed.skills as string[]).slice(0, 5).map((s, i) => (
                               <Badge key={i} variant="secondary" className="text-[10px]">{s}</Badge>
@@ -101,7 +159,15 @@ export function Dashboard() {
                       </div>
                     </div>
                     <div className="flex items-center gap-4">
-                      {resumeMatches.length > 0 ? (
+                      {isPending ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={(e) => { e.stopPropagation(); navigate(`/graph/${resume.id}`) }}
+                        >
+                          查看解析进度
+                        </Button>
+                      ) : resumeMatches.length > 0 ? (
                         <>
                           <div className="text-right">
                             <p className="text-sm text-muted-foreground">匹配职位</p>
@@ -121,6 +187,13 @@ export function Dashboard() {
                         <p className="text-xs text-muted-foreground">暂无匹配</p>
                       )}
                       <ChevronRight className="h-4 w-4 text-muted-foreground/30" />
+                      <button
+                        className="ml-1 rounded p-1.5 text-muted-foreground/40 hover:bg-red-50 hover:text-red-500 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); handleDelete(resume.id, parsed.name || resume.originalFilename) }}
+                        title="删除简历"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
                     </div>
                   </CardContent>
                 </Card>
@@ -135,7 +208,7 @@ export function Dashboard() {
   // ═══════════════════════════════════════════
   // Enterprise: 我的职位
   // ═══════════════════════════════════════════
-  const myJobs = parsedDocs.filter((d) => d.docType === 'job_description')
+  const myJobs = documents.filter((d) => d.docType === 'job_description')
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -164,11 +237,12 @@ export function Dashboard() {
           {myJobs.map((job) => {
             const jobMatches = matches.filter((m) => m.jobDocId === job.id)
             const topCandidate = jobMatches[0]
+            const isPending = job.status === 'uploaded' || job.status === 'parsing'
             return (
               <Card
                 key={job.id}
                 className="cursor-pointer transition-shadow hover:shadow-md"
-                onClick={() => navigate(`/job/${job.id}`)}
+                onClick={() => navigate(isPending ? `/graph/${job.id}` : `/job/${job.id}`)}
               >
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between gap-2">
@@ -180,12 +254,26 @@ export function Dashboard() {
                         {DOC_TYPE_LABEL[job.docType]} · {new Date(job.createdAt).toLocaleDateString('zh-CN')}
                       </p>
                     </div>
-                    <Badge variant="secondary" className="shrink-0 text-[10px]">
-                      {STATUS_LABEL[job.status]}
-                    </Badge>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Badge variant="secondary" className="text-[10px]">
+                        {isPending ? '解析中...' : STATUS_LABEL[job.status]}
+                      </Badge>
+                      <button
+                        className="rounded p-1 text-muted-foreground/40 hover:bg-red-50 hover:text-red-500 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); handleDelete(job.id, (job.parsedJson as any)?.structured?.title || job.originalFilename) }}
+                        title="删除职位"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
 
-                  {jobMatches.length > 0 && topCandidate ? (
+                  {isPending ? (
+                    <div className="mt-3 rounded-lg bg-muted/30 p-3 text-center">
+                      <div className="mx-auto mb-1.5 h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                      <p className="text-xs text-muted-foreground">正在解析中，完成后自动匹配...</p>
+                    </div>
+                  ) : jobMatches.length > 0 && topCandidate ? (
                     <div className="mt-3 rounded-lg bg-muted/50 p-3">
                       <p className="text-xs text-muted-foreground">
                         匹配 <strong>{jobMatches.length}</strong> 位候选人
@@ -210,14 +298,14 @@ export function Dashboard() {
                     <div className="mt-3 rounded-lg bg-muted/30 p-3 text-center">
                       <p className="text-xs text-muted-foreground">暂无匹配候选人</p>
                     </div>
-                  ) : (
-                    <div className="mt-3 rounded-lg bg-muted/30 p-3 text-center">
-                      <p className="text-xs text-muted-foreground">解析中，完成后自动匹配...</p>
-                    </div>
-                  )}
+                  ) : null}
 
                   <div className="mt-3">
-                    {jobMatches.length > 0 ? (
+                    {isPending ? (
+                      <Button size="sm" className="w-full" onClick={(e) => { e.stopPropagation(); navigate(`/graph/${job.id}`) }}>
+                        查看解析进度
+                      </Button>
+                    ) : jobMatches.length > 0 ? (
                       <Button size="sm" className="w-full" onClick={(e) => { e.stopPropagation(); navigate(`/job/${job.id}`) }}>
                         查看 {jobMatches.length} 位候选人
                       </Button>

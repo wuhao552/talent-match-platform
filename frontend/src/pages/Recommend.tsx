@@ -9,11 +9,16 @@ import { scoreColor } from '@/lib/utils'
 
 import type { MatchResult } from '@/types'
 
-function ScoreBadge({ score }: { score: number }) {
+function ScoreBadge({ score, bonusInfo }: { score: number; bonusInfo?: string }) {
   return (
-    <div className="flex items-center gap-1 text-2xl font-bold tabular-nums">
-      <span className={scoreColor(score)}>{Math.round(score)}</span>
-      <span className="text-sm font-normal text-muted-foreground">分</span>
+    <div className="flex flex-col items-end">
+      <div className="flex items-center gap-1 text-2xl font-bold tabular-nums">
+        <span className={scoreColor(score)}>{Math.round(score)}</span>
+        <span className="text-sm font-normal text-muted-foreground">分</span>
+      </div>
+      {bonusInfo && (
+        <span className="text-[10px] text-muted-foreground">{bonusInfo}</span>
+      )}
     </div>
   )
 }
@@ -56,11 +61,19 @@ export function Recommend() {
           </p>
         </div>
         <Button onClick={handleRecommend} disabled={loading}>
-          {loading ? '分析中...' : '刷新推荐'}
+          {loading ? 'LLM 深度匹配中...' : '刷新推荐'}
         </Button>
       </div>
 
-      {results.length === 0 && !loading ? (
+      {loading ? (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent mb-4" />
+            <p className="text-lg font-medium">LLM 深度匹配计算中...</p>
+            <p className="text-sm text-muted-foreground mt-1">正在调用大模型进行技能语义匹配，请稍候</p>
+          </CardContent>
+        </Card>
+      ) : results.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center">
             <p className="text-4xl font-bold text-muted-foreground">--</p>
@@ -89,7 +102,14 @@ export function Recommend() {
                       <p className="mt-0.5 text-xs text-muted-foreground">{result.candidateCity}</p>
                     )}
                   </div>
-                  <ScoreBadge score={result.overallScore} />
+                  <ScoreBadge
+                    score={result.overallScore}
+                    bonusInfo={
+                      (result.cityMatchBonus || 0) > 0
+                        ? `同城+${result.cityMatchBonus}`
+                        : undefined
+                    }
+                  />
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">

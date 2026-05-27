@@ -44,6 +44,7 @@ export interface DocumentSkill {
   confidence?: number
   extractionMethod?: string
   sourceText?: string
+  category?: string | null
 }
 
 // Match result
@@ -54,6 +55,12 @@ export interface MatchResult {
   overallScore: number
   skillMatchScore: number
   cityMatchBonus: number
+  cooccurrenceBonus?: number
+  hotnessBonus?: number
+  experienceBonus?: number
+  industryMatchBonus?: number
+  trendBonus?: number
+  scoreBreakdown?: ScoreBreakdown | null
   matchDetails: MatchDetail[]
   createdAt: string
   // Enriched fields
@@ -74,6 +81,21 @@ export interface MatchDetail {
   personProficiency: string
   jobRequirement: string
   score: number
+  resumeSkillId?: number
+  jobSkillId?: number
+  importance?: string
+  hotnessBoost?: number
+}
+
+export interface ScoreBreakdown {
+  skillMatchScore: number
+  cooccurrenceBonus: number
+  cityMatchBonus: number
+  hotnessBonus: number
+  experienceBonus: number
+  industryMatchBonus: number
+  trendBonus: number
+  overallScore: number
 }
 
 // Graph data for D3

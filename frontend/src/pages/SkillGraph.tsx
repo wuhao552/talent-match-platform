@@ -21,9 +21,9 @@ interface PipelineStep {
 }
 
 const agents = [
-  { key: 'document_parser', label: '文档解析 Agent', desc: '读取文件并调用大模型进行结构化信息提取' },
+  { key: 'text_extractor', label: '文本提取', desc: '从PDF/DOCX文件中提取原始文本' },
+  { key: 'document_parser', label: '文档解析 Agent', desc: '调用大模型进行结构化信息提取（不含技能）' },
   { key: 'skill_extractor', label: '技能提取 Agent', desc: '调用大模型提取技能标签与熟练度评估' },
-  { key: 'graph_builder', label: '图谱构建 Agent', desc: '将技能关系写入 Neo4j 知识图谱' },
 ]
 
 // ── Pipeline Step ──
@@ -59,6 +59,10 @@ function AgentStep({
   const hasRaw = rawResponse.length > 0
   const skillsList = s === 'done' && agent.key === 'skill_extractor' && Array.isArray(step.data?.skills) ? (step.data!.skills as any[]) : null
   const hasSkills = skillsList && skillsList.length > 0
+  const isResolution = s === 'done' && agent.key === 'skill_resolution'
+  const resolutionTotal = isResolution ? (step.data?.totalExtracted as number) ?? 0 : 0
+  const resolutionMatched = isResolution ? (step.data?.matched as number) ?? 0 : 0
+  const resolutionUnique = isResolution ? (step.data?.uniqueCanonical as number) ?? 0 : 0
   const hasGraph = s === 'done' && agent.key === 'graph_builder' && step.data?.nodeCount != null
 
   return (
@@ -126,6 +130,16 @@ function AgentStep({
           </div>
         )}
 
+        {isResolution && (
+          <div className="mt-2 space-y-1">
+            <div className="flex items-center gap-3 text-xs">
+              <span className="text-muted-foreground">提取技能: <strong className="text-foreground">{resolutionTotal}</strong></span>
+              <span className="text-green-600">匹配成功: <strong>{resolutionMatched}</strong></span>
+              <span className="text-muted-foreground">映射到: <strong className="text-foreground">{resolutionUnique}</strong> 个标准技能</span>
+            </div>
+          </div>
+        )}
+
         {hasGraph && (
           <p className="mt-1 text-xs text-muted-foreground">
             已将 <strong className="text-foreground">{String(step.data!.nodeCount ?? 0)}</strong> 个技能关系写入 Neo4j
@@ -165,46 +179,63 @@ export function SkillGraph() {
         const doc = d.data
         setDocument(doc)
         setSkills(s.data)
-        // If doc is already parsed, build pipeline from stored LLM data
-        if (doc.status === 'parsed' && doc.parsedJson?.llmCalls) {
-          const llm = doc.parsedJson.llmCalls as any
-          const steps: Record<string, PipelineStep> = {}
-          const now = Date.now()
-          steps['document_parser'] = {
-            agent: 'document_parser', status: 'done',
-            summary: '文档解析完成',
-            data: {
-              textLength: doc.parsedText?.length ?? 0,
-              textPreview: doc.parsedText?.slice(0, 200) ?? '',
-              latencyMs: llm.documentParse?.latencyMs ?? 0,
-              model: llm.documentParse?.model ?? '',
-              rawResponse: llm.documentParse?.rawResponse ?? '',
-            },
-            timestamp: now,
+        // If doc is already parsed, load stored pipeline steps from parsedJson
+        if (doc.status === 'parsed') {
+          const storedPipeline = (doc.parsedJson as any)?.pipeline as PipelineStep[] | undefined
+          if (storedPipeline && storedPipeline.length > 0) {
+            const steps: Record<string, PipelineStep> = {}
+            for (const step of storedPipeline) {
+              // Keep only the latest step per agent (done overwrites running)
+              if (step.status === 'done' || step.status === 'error' || !steps[step.agent]) {
+                steps[step.agent] = step
+              }
+            }
+            setPipelineSteps(steps)
+            setPipelineDone(true)
+            setPipelineExpanded(false)
+            // Sum latencies from done steps
+            let total = 0
+            for (const s of Object.values(steps)) {
+              if (s.data?.latencyMs) total += Number(s.data.latencyMs)
+            }
+            setElapsed(total || 1)
+          } else {
+            // Fallback: reconstruct from llmCalls (legacy data)
+            const llm = (doc.parsedJson as any)?.llmCalls as any
+            if (llm) {
+              const now = Date.now()
+              const steps: Record<string, PipelineStep> = {}
+              steps['document_parser'] = {
+                agent: 'document_parser', status: 'done',
+                summary: '文档解析完成',
+                data: {
+                  textLength: doc.parsedText?.length ?? 0,
+                  textPreview: doc.parsedText?.slice(0, 200) ?? '',
+                  latencyMs: llm.documentParse?.latencyMs ?? 0,
+                  model: llm.documentParse?.model ?? '',
+                  rawResponse: llm.documentParse?.rawResponse ?? '',
+                },
+                timestamp: now,
+              }
+              steps['skill_extractor'] = {
+                agent: 'skill_extractor', status: 'done',
+                summary: `大模型提取 ${s.data.length} 个技能标签`,
+                data: {
+                  skillCount: s.data.length,
+                  skills: s.data.map((sk: any) => ({ name: sk.skillName, proficiency: sk.proficiency })),
+                  latencyMs: llm.skillExtraction?.latencyMs ?? 0,
+                  model: llm.skillExtraction?.model ?? '',
+                  rawResponse: llm.skillExtraction?.rawResponse ?? '',
+                },
+                timestamp: now,
+              }
+              setPipelineSteps(steps)
+              setPipelineDone(true)
+              setPipelineExpanded(false)
+              const totalMs = (llm.documentParse?.latencyMs ?? 0) + (llm.skillExtraction?.latencyMs ?? 0)
+              setElapsed(totalMs)
+            }
           }
-          steps['skill_extractor'] = {
-            agent: 'skill_extractor', status: 'done',
-            summary: `大模型提取 ${s.data.length} 个技能标签`,
-            data: {
-              skillCount: s.data.length,
-              skills: s.data.map((sk: any) => ({ name: sk.skillName, proficiency: sk.proficiency })),
-              latencyMs: llm.skillExtraction?.latencyMs ?? 0,
-              model: llm.skillExtraction?.model ?? '',
-              rawResponse: llm.skillExtraction?.rawResponse ?? '',
-            },
-            timestamp: now,
-          }
-          steps['graph_builder'] = {
-            agent: 'graph_builder', status: 'done',
-            summary: `知识图谱构建完成: ${s.data.length} 个技能关系已写入 Neo4j`,
-            data: { nodeCount: s.data.length },
-            timestamp: now,
-          }
-          setPipelineSteps(steps)
-          setPipelineDone(true)
-          setPipelineExpanded(false)
-          const totalMs = (llm.documentParse?.latencyMs ?? 0) + (llm.skillExtraction?.latencyMs ?? 0)
-          setElapsed(totalMs)
         }
       })
       .catch(console.error)
@@ -386,6 +417,30 @@ export function SkillGraph() {
                 )}
               </CardContent>
             </Card>
+
+            {/* Unmatched skills — LLM extracted but no canonical ID */}
+            {(() => {
+              const unmatched = (document.parsedJson as any)?.unmatchedSkills as Array<{ name: string; proficiency: string }> | undefined
+              if (!unmatched || unmatched.length === 0) return null
+              return (
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">未匹配技能</CardTitle>
+                    <CardDescription>以下技能由大模型提取，但在标准技能库中未找到对应ID，可通过名称模糊匹配参与评分</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex flex-wrap gap-1.5">
+                      {unmatched.map((s, i) => (
+                        <Badge key={i} variant="outline" className="text-[11px] border-dashed">
+                          {s.name}
+                          <span className="ml-1 opacity-40">{proficiencyLabel[s.proficiency] || s.proficiency}</span>
+                        </Badge>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )
+            })()}
 
             {/* Structured fields */}
             {Object.keys(structured).length > 0 && (

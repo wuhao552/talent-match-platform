@@ -117,6 +117,10 @@ export const graphApi = {
     request<ApiResponse<GraphData>>(
       `/graph/skill-network${skillId ? `?skillId=${skillId}` : ''}`,
     ),
+  getCooccurrenceBatch: (skillIds: number[]) =>
+    request<ApiResponse<Array<{ sourceId: number; targetId: number; freqSkill: number }>>>(`/graph/cooccurrence-batch`, {
+      method: 'POST', body: JSON.stringify({ skillIds }),
+    }),
 }
 
 // Matching
