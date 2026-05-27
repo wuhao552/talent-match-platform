@@ -1,98 +1,95 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Talent Match Platform — Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+基于 NestJS 11 的人才-岗位智能匹配系统后端服务。
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## 技术栈
 
-## Description
+- **框架**: NestJS 11 (Node.js)
+- **数据库**: PostgreSQL (TypeORM) + Neo4j (知识图谱)
+- **LLM**: DeepSeek API (文档解析 / 技能提取 / 语义匹配)
+- **认证**: JWT + Passport
+- **端口**: 3100 (`/api` 前缀)
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+## 快速启动
 
 ```bash
-$ npm install
+cd talent-match-platform/backend
+npm install
 ```
 
-## Compile and run the project
+配置 `.env`：
+
+```env
+LLM_API_KEY=your_deepseek_api_key
+LLM_BASE_URL=https://api.deepseek.com
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=postgres
+DB_PASSWORD=123456
+DB_DATABASE=talent_match
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=12345678
+```
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm run start:dev    # 开发模式 (热重载)
+npm run build        # 生产构建
+npm run start:prod   # 生产运行
 ```
 
-## Run tests
+## 核心模块
+
+```
+AppModule
+├── AuthModule        JWT 认证 / 角色管理
+├── DocumentModule    文件上传 / 解析管道
+├── SkillModule       技能 CRUD / 种子数据 / 规则匹配
+├── GraphModule       Neo4j 知识图谱服务
+├── MatchingModule    匹配算法 / 推荐引擎 / 评分
+├── LlmModule         DeepSeek API 封装
+└── AgentModule       文档解析 Agent 编排
+```
+
+## 匹配算法
+
+### 技能匹配分 (满分 60)
+
+```
+Phase 0: 批量加载技能元数据 (hotness / trend / category)
+Phase 1: ID 精确匹配 → 100% 权重 × 熟练度评分
+Phase 2: 名称模糊匹配 → 100% 权重 × 相似度 × 熟练度
+Phase 2.5: 同类别跨技能匹配 → 55% 权重 × 熟练度
+Phase 2.6: LLM 语义匹配 → 置信度 × 权重 × 熟练度
+Phase 3: 覆盖因子 = 0.55 + 0.45 × 匹配覆盖率 → 最终技能分
+```
+
+### 加成项 (满分 40)
+
+| 维度 | 上限 | 数据来源 |
+|------|------|----------|
+| 知识图谱共现 | 15 | Neo4j CO_OCCURS_WITH (5 粒度) |
+| 同城/同区域 | 10 | 用户注册城市 + 岗位地点 |
+| 高热度技能 | 15 | Job-SDF 市场需求热度归一化 |
+| 经验溢出 | 5 | 简历工作年限 vs 岗位要求 |
+| 行业匹配 | 5 | L2 职业画像重叠 + 类别多样性 |
+| 技能趋势 | 5 | Job-SDF 需求趋势 (36 月时序) |
+
+## 数据集
+
+技能知识图谱基于 [Job-SDF](https://github.com/Job-SDF/benchmark) (NeurIPS 2024) 构建：
+
+- 2,335 个规范技能 (中英双语)
+- 60,804 条共现关系 (5 个粒度: L1 职业 / L2 职业 / 技能 / 企业 / 地区)
+- 36 个月需求时序 (2021.01–2023.12)
+- 52 个 L2 职业画像
+
+导入图谱数据：
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+python benchmark-main/import_neo4j.py
 ```
 
-## Deployment
+---
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+**开发者**: 吴昊
