@@ -40,7 +40,7 @@ export class User {
   @Column({ nullable: true, length: 64 })
   city: string
 
-  @Column({ name: 'intended_cities', type: 'text', array: true, nullable: true })
+  @Column({ name: 'intended_cities', type: 'jsonb', nullable: true })
   intendedCities: string[]
 
   @Column({ name: 'company_name', nullable: true, length: 128 })

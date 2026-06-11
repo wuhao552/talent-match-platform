@@ -49,16 +49,45 @@ export class AdminService {
   }
 
   async getStatsTrend(days: number) {
+    const startDate = new Date()
+    startDate.setDate(startDate.getDate() - days)
+    startDate.setHours(0, 0, 0, 0)
+
+    const [userRows, docRows, llmRows] = await Promise.all([
+      this.userRepo.createQueryBuilder('u')
+        .select("TO_CHAR(DATE_TRUNC('day', u.createdAt), 'YYYY-MM-DD')", 'date')
+        .addSelect('COUNT(*)', 'count')
+        .where('u.createdAt >= :s', { s: startDate })
+        .groupBy("DATE_TRUNC('day', u.createdAt)")
+        .getRawMany(),
+      this.docRepo.createQueryBuilder('d')
+        .select("TO_CHAR(DATE_TRUNC('day', d.createdAt), 'YYYY-MM-DD')", 'date')
+        .addSelect('COUNT(*)', 'count')
+        .where('d.createdAt >= :s', { s: startDate })
+        .groupBy("DATE_TRUNC('day', d.createdAt)")
+        .getRawMany(),
+      this.llmLogRepo.createQueryBuilder('l')
+        .select("TO_CHAR(DATE_TRUNC('day', l.createdAt), 'YYYY-MM-DD')", 'date')
+        .addSelect('COUNT(*)', 'count')
+        .where('l.createdAt >= :s', { s: startDate })
+        .groupBy("DATE_TRUNC('day', l.createdAt)")
+        .getRawMany(),
+    ])
+
+    const userMap = new Map(userRows.map((r: any) => [r.date, Number(r.count)]))
+    const docMap = new Map(docRows.map((r: any) => [r.date, Number(r.count)]))
+    const llmMap = new Map(llmRows.map((r: any) => [r.date, Number(r.count)]))
+
     const result: { date: string; newUsers: number; newDocuments: number; llmCalls: number }[] = []
     for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0)
-      const next = new Date(d); next.setDate(next.getDate() + 1)
-      const [newUsers, newDocuments, llmCalls] = await Promise.all([
-        this.userRepo.createQueryBuilder('u').where('u.createdAt >= :s AND u.createdAt < :e', { s: d, e: next }).getCount(),
-        this.docRepo.createQueryBuilder('d').where('d.createdAt >= :s AND d.createdAt < :e', { s: d, e: next }).getCount(),
-        this.llmLogRepo.createQueryBuilder('l').where('l.createdAt >= :s AND l.createdAt < :e', { s: d, e: next }).getCount(),
-      ])
-      result.push({ date: d.toISOString().split('T')[0], newUsers, newDocuments, llmCalls })
+      const d = new Date(); d.setDate(d.getDate() - i)
+      const dateStr = d.toISOString().split('T')[0]
+      result.push({
+        date: dateStr,
+        newUsers: userMap.get(dateStr) || 0,
+        newDocuments: docMap.get(dateStr) || 0,
+        llmCalls: llmMap.get(dateStr) || 0,
+      })
     }
     return result
   }

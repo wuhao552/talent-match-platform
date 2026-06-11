@@ -12,6 +12,15 @@ async function bootstrap() {
   })
 
   app.setGlobalPrefix('api')
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const compression = require('compression')
+  app.use(compression({
+    filter: (req: any, res: any) => {
+      // Skip compression for SSE responses — compression buffers output, breaking event-stream
+      if (res.getHeader('Content-Type') === 'text/event-stream') return false
+      return compression.filter(req, res)
+    },
+  }))
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }))
 
   const port = process.env.PORT ?? 3100

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import type { IAgent, AgentContext, AgentResult, AgentDefinition } from './agent.interface'
 import { LlmService } from '../modules/llm/llm.service'
-import * as fs from 'fs'
+import * as fs from 'fs/promises'
 
 @Injectable()
 export class DocumentParserAgent implements IAgent {
@@ -81,7 +81,7 @@ export class DocumentParserAgent implements IAgent {
   async extractText(filePath: string, fileFormat: string): Promise<string> {
     if (fileFormat === 'pdf') {
       const pdfParse = require('pdf-parse')
-      const buffer = fs.readFileSync(filePath)
+      const buffer = await fs.readFile(filePath)
       const data = await pdfParse(buffer)
       return data.text || ''
     }
@@ -93,6 +93,6 @@ export class DocumentParserAgent implements IAgent {
     }
 
     // Plain text fallback
-    return fs.readFileSync(filePath, 'utf-8')
+    return fs.readFile(filePath, 'utf-8')
   }
 }

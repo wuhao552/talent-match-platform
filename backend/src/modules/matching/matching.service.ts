@@ -1,13 +1,12 @@
 import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
+import { Repository, In } from 'typeorm'
 import { MatchResult, MatchDetail, ScoreBreakdown } from './match-result.entity'
 import { Document } from '../document/document.entity'
 import { DocumentSkill } from '../skill/document-skill.entity'
 import { Skill } from '../skill/skill.entity'
 import { Neo4jService } from '../graph/neo4j.service'
 import { User } from '../user/user.entity'
-import { LlmService } from '../llm/llm.service'
 
 // ── Constants ──
 
@@ -94,6 +93,14 @@ interface NamedSkill {
   yearsOfExperience?: number
 }
 
+/** Pre-loaded data to avoid per-pair DB queries in recommend() */
+interface MatchPreload {
+  docMap: Map<string, Document>
+  skillsByDoc: Map<string, DocumentSkill[]>
+  userMap: Map<string, User>
+  skillMetaMap: Map<number, Skill>
+}
+
 // ── Service ──
 
 @Injectable()
@@ -105,7 +112,6 @@ export class MatchingService {
     @InjectRepository(User) private userRepo: Repository<User>,
     @InjectRepository(Skill) private skillRepo: Repository<Skill>,
     private neo4j: Neo4jService,
-    private llmService: LlmService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════
@@ -115,10 +121,10 @@ export class MatchingService {
   async calculateMatch(
     resumeDocId: string,
     jobDocId: string,
-    opts: { useLLM?: boolean } = {},
+    preload?: MatchPreload,
   ): Promise<MatchResult> {
     try {
-      return await this._calculateMatchInternal(resumeDocId, jobDocId, opts)
+      return await this._calculateMatchInternal(resumeDocId, jobDocId, preload)
     } catch (err) {
       console.error(
         `[Matching] calculateMatch FAILED for resume=${resumeDocId?.slice(0, 8)} job=${jobDocId?.slice(0, 8)}:`,
@@ -152,15 +158,45 @@ export class MatchingService {
   private async _calculateMatchInternal(
     resumeDocId: string,
     jobDocId: string,
-    opts: { useLLM?: boolean } = {},
+    preload?: MatchPreload,
   ): Promise<MatchResult> {
     // ── Phase 0: Load all data ──
-    const [resumeSkills, jobSkills, resumeDoc, jobDoc] = await Promise.all([
-      this.dsRepo.find({ where: { documentId: resumeDocId }, relations: ['skill'] }),
-      this.dsRepo.find({ where: { documentId: jobDocId }, relations: ['skill'] }),
-      this.docRepo.findOne({ where: { id: resumeDocId } }),
-      this.docRepo.findOne({ where: { id: jobDocId } }),
-    ])
+    let resumeSkills: DocumentSkill[]
+    let jobSkills: DocumentSkill[]
+    let resumeDoc: Document | null
+    let jobDoc: Document | null
+    let skillMetaMap: Map<number, Skill>
+    let person: User | null = null
+    let company: User | null = null
+
+    if (preload) {
+      // Use pre-loaded data — zero DB queries
+      resumeSkills = preload.skillsByDoc.get(resumeDocId) || []
+      jobSkills = preload.skillsByDoc.get(jobDocId) || []
+      resumeDoc = preload.docMap.get(resumeDocId) || null
+      jobDoc = preload.docMap.get(jobDocId) || null
+      skillMetaMap = preload.skillMetaMap
+      if (resumeDoc) person = preload.userMap.get(resumeDoc.userId) || null
+      if (jobDoc) company = preload.userMap.get(jobDoc.userId) || null
+    } else {
+      ;[resumeSkills, jobSkills, resumeDoc, jobDoc] = await Promise.all([
+        this.dsRepo.find({ where: { documentId: resumeDocId }, relations: ['skill'] }),
+        this.dsRepo.find({ where: { documentId: jobDocId }, relations: ['skill'] }),
+        this.docRepo.findOne({ where: { id: resumeDocId } }),
+        this.docRepo.findOne({ where: { id: jobDocId } }),
+      ])
+
+      // Load Skill entities for hotness/trend metadata
+      const allSkillIds = new Set<number>()
+      for (const ds of resumeSkills) allSkillIds.add(ds.skillId)
+      for (const ds of jobSkills) allSkillIds.add(ds.skillId)
+
+      skillMetaMap = new Map<number, Skill>()
+      if (allSkillIds.size > 0) {
+        const skillEntities = await this.skillRepo.findBy([...allSkillIds].map((id) => ({ id })))
+        for (const s of skillEntities) skillMetaMap.set(s.id, s)
+      }
+    }
 
     if (!resumeDoc || !jobDoc) {
       throw new Error('Document not found')
@@ -171,17 +207,6 @@ export class MatchingService {
 
     const jobById = new Map<number, DocumentSkill>()
     for (const ds of jobSkills) jobById.set(ds.skillId, ds)
-
-    // Load Skill entities for hotness/trend metadata
-    const allSkillIds = new Set<number>()
-    for (const ds of resumeSkills) allSkillIds.add(ds.skillId)
-    for (const ds of jobSkills) allSkillIds.add(ds.skillId)
-
-    const skillMetaMap = new Map<number, Skill>()
-    if (allSkillIds.size > 0) {
-      const skillEntities = await this.skillRepo.findBy([...allSkillIds].map((id) => ({ id })))
-      for (const s of skillEntities) skillMetaMap.set(s.id, s)
-    }
 
     // Load unmatched skills (LLM-extracted but no canonical ID)
     const resumeUnmatched = ((resumeDoc.parsedJson as any)?.unmatchedSkills || []) as Array<{
@@ -340,44 +365,6 @@ export class MatchingService {
       }
     }
 
-    // ── Phase 2.6: LLM semantic matching for remaining unmatched pairs ──
-    const stillUnmatchedJob = jobNamed.filter((_, i) => !matchedJobNameIndices.has(i))
-    const stillUnusedResume = resumeNamed.filter((_, i) => !usedResumeNames.has(i))
-
-    if (opts.useLLM && stillUnmatchedJob.length > 0 && stillUnusedResume.length > 0) {
-      try {
-        const semanticMatches = await this.llmSemanticMatch(stillUnmatchedJob, stillUnusedResume)
-        for (const sm of semanticMatches) {
-          const jobReq = stillUnmatchedJob[sm.jobIdx]
-          const resumeSkill = stillUnusedResume[sm.resumeIdx]
-          if (usedResumeNames.has(sm.resumeIdx) || matchedJobNameIndices.has(sm.jobIdx)) continue
-
-          const importance = inferImportance(jobReq.proficiency)
-          const weight = IMPORTANCE_WEIGHTS[importance] || 0.6
-          const profScore = this.calcProficiencyScore(resumeSkill.proficiency, jobReq.proficiency)
-          const semScore = profScore * weight * sm.confidence
-
-          usedResumeNames.add(sm.resumeIdx)
-          matchedJobNameIndices.add(sm.jobIdx)
-
-          matchDetails.push({
-            skillId: -800,
-            skillName: `${resumeSkill.name} ⇄ ${jobReq.name}`,
-            personProficiency: resumeSkill.proficiency,
-            jobRequirement: jobReq.proficiency,
-            score: Math.round(semScore * 100) / 100,
-            resumeSkillId: resumeSkill.skillId,
-            jobSkillId: jobReq.skillId,
-            importance,
-          })
-
-          totalProficiencyScore += profScore * weight * sm.confidence
-          matchedWeight += weight * sm.confidence
-        }
-      } catch (err) {
-        console.warn(`[Matching] LLM semantic matching failed: ${(err as Error).message}`)
-      }
-    }
     // Avg proficiency of matched skills × soft coverage factor
     // coverageFactor = 0.55 + 0.45 × coverage  (range: 0.55–1.0, sqrt-like floor)
     const avgProficiency = matchedWeight > 0 ? totalProficiencyScore / matchedWeight : 0
@@ -387,7 +374,7 @@ export class MatchingService {
       ? Math.round(avgProficiency * coverageFactor * 100) / 100
       : 0
 
-    // ── Phase 4: Batch co-occurrence bonus ──
+    // ── Phase 4: Batch co-occurrence bonus (3 directions in parallel) ──
     let cooccurrenceBonus = 0
     const COOCCUR_CAP = 15
 
@@ -397,32 +384,27 @@ export class MatchingService {
     const matchedResumeIds = [...resumeById.keys()].filter((id) => usedResumeSkillIds.has(id))
     const matchedJobIds = [...jobById.keys()].filter((id) => usedJobSkillIds.has(id))
 
-    const allCoocEdges: Array<{ source: number; target: number; freq: number }> = []
+    const allJobIds = [...jobById.keys()]
 
-    // Direction A: extra resume skills ↔ all job skills (hidden extra skills)
-    if (resumeExtraIds.length > 0 && jobById.size > 0) {
-      const edges = await this.neo4j.batchGetCooccurrences(resumeExtraIds, [...jobById.keys()])
-      allCoocEdges.push(...edges.map((e) => ({ source: e.sourceId, target: e.targetId, freq: e.freqSkill })))
-    }
-
-    // Direction B: unmatched job skills ↔ matched resume skills (near-miss)
-    if (jobUnmatchedIds.length > 0 && matchedResumeIds.length > 0) {
-      const edges = await this.neo4j.batchGetCooccurrences(jobUnmatchedIds, matchedResumeIds)
-      allCoocEdges.push(...edges.map((e) => ({ source: e.sourceId, target: e.targetId, freq: e.freqSkill })))
-    }
-
-    // Direction C: co-occurrence among matched skill pairs (reinforcement bonus)
-    if (matchedResumeIds.length > 1 && matchedJobIds.length > 1) {
-      const edges = await this.neo4j.batchGetCooccurrences(matchedResumeIds, matchedJobIds)
-      allCoocEdges.push(...edges.map((e) => ({ source: e.sourceId, target: e.targetId, freq: e.freqSkill })))
-    }
+    // Fire all 3 directions in parallel — they are independent
+    const [edgesA, edgesB, edgesC] = await Promise.all([
+      resumeExtraIds.length > 0 && allJobIds.length > 0
+        ? this.neo4j.batchGetCooccurrences(resumeExtraIds, allJobIds)
+        : Promise.resolve([]),
+      jobUnmatchedIds.length > 0 && matchedResumeIds.length > 0
+        ? this.neo4j.batchGetCooccurrences(jobUnmatchedIds, matchedResumeIds)
+        : Promise.resolve([]),
+      matchedResumeIds.length > 1 && matchedJobIds.length > 1
+        ? this.neo4j.batchGetCooccurrences(matchedResumeIds, matchedJobIds)
+        : Promise.resolve([]),
+    ])
 
     const coocSeen = new Set<string>()
-    for (const e of allCoocEdges) {
-      const key = `${Math.min(e.source, e.target)}-${Math.max(e.source, e.target)}`
+    for (const e of [...edgesA, ...edgesB, ...edgesC]) {
+      const key = `${Math.min(e.sourceId, e.targetId)}-${Math.max(e.sourceId, e.targetId)}`
       if (coocSeen.has(key)) continue
       coocSeen.add(key)
-      const logFreq = Math.log(Math.max(e.freq, 1))
+      const logFreq = Math.log(Math.max(e.freqSkill, 1))
       cooccurrenceBonus += Math.min(2, logFreq / Math.log(50) * 2)
     }
     cooccurrenceBonus = Math.round(Math.min(COOCCUR_CAP, cooccurrenceBonus) * 100) / 100
@@ -512,10 +494,15 @@ export class MatchingService {
 
     // ── Phase 7: City match ──
     let cityMatchBonus = 0
-    const [person, company] = await Promise.all([
-      this.userRepo.findOne({ where: { id: resumeDoc.userId } }),
-      this.userRepo.findOne({ where: { id: jobDoc.userId } }),
-    ])
+    if (!preload) {
+      // Only query if not pre-loaded
+      const [p, c] = await Promise.all([
+        this.userRepo.findOne({ where: { id: resumeDoc.userId } }),
+        this.userRepo.findOne({ where: { id: jobDoc.userId } }),
+      ])
+      person = p
+      company = c
+    }
 
     const resumeCityRaw = person?.city || parsedResume.city || ''
     const jobCityRaw = company?.city || parsedJob.city || parsedJob.location || ''
@@ -662,8 +649,7 @@ export class MatchingService {
     const trendSample = skillMetaMap.size > 0
       ? [...skillMetaMap.values()].filter((s) => s.demandTrend != null).length
       : 0
-    const _occProfiles = this.loadOccupationProfiles()
-    const occCount = _occProfiles ? Object.keys(_occProfiles).length : 0
+    const occCount = occProfiles ? Object.keys(occProfiles).length : 0
     console.log(
       `[Matching] resume=${resumeDocId.slice(0, 8)} job=${jobDocId.slice(0, 8)} | ` +
       `matched=${matchDetails.length} jobSkills=${jobById.size} resumeSkills=${resumeById.size} | ` +
@@ -737,26 +723,52 @@ export class MatchingService {
       if (myDocs.length === 0) return []
 
       const jobDocs = await this.docRepo.find({ where: { docType: 'job_description', status: 'parsed' } })
+      const resumeIds = myDocs.map((d) => d.id)
+      const jobIds = jobDocs.map((d) => d.id)
+
+      // Batch load all existing non-stale match results in one query
+      const existingMatches = await this.matchRepo
+        .createQueryBuilder('mr')
+        .where('mr.resumeDocId IN (:...resumeIds) AND mr.jobDocId IN (:...jobIds)', { resumeIds, jobIds })
+        .andWhere('mr.staleAt IS NULL')
+        .orderBy('mr.createdAt', 'DESC')
+        .getMany()
+      const matchCache = new Map<string, MatchResult>()
+      for (const m of existingMatches) {
+        const key = `${m.resumeDocId}-${m.jobDocId}`
+        if (!matchCache.has(key)) matchCache.set(key, m)
+      }
+
+      // Pre-load all data needed by calculateMatch (avoids per-pair queries)
+      const allDocIds = [...new Set([...resumeIds, ...jobIds])]
+      const preload = await this.buildPreload(allDocIds, [...myDocs, ...jobDocs])
+
+      // Separate cached hits from pairs that need computation
+      const missing: Array<{ resumeId: string; jobId: string }> = []
       for (const myDoc of myDocs) {
         for (const jobDoc of jobDocs) {
           const key = `${myDoc.id}-${jobDoc.id}`
           if (seen.has(key)) continue
           seen.add(key)
 
-          // Check if there's a non-stale cached result
-          const existing = await this.matchRepo.findOne({
-            where: { resumeDocId: myDoc.id, jobDocId: jobDoc.id },
-            order: { createdAt: 'DESC' },
-          })
-          if (existing && existing.staleAt == null) {
-            results.push(existing)
+          const cached = matchCache.get(key)
+          if (cached) {
+            results.push(cached)
           } else {
-            try {
-              results.push(await this.calculateMatch(myDoc.id, jobDoc.id))
-            } catch (err) {
-              console.error(`[Matching] calculateMatch failed for resume=${myDoc.id.slice(0, 8)} job=${jobDoc.id.slice(0, 8)}: ${(err as Error).message}`)
-            }
+            missing.push({ resumeId: myDoc.id, jobId: jobDoc.id })
           }
+        }
+      }
+
+      // Compute missing matches in parallel (max 5 concurrent)
+      if (missing.length > 0) {
+        const pLimit = (await import('p-limit')).default
+        const limit = pLimit(5)
+        const computed = await Promise.allSettled(
+          missing.map((p) => limit(() => this.calculateMatch(p.resumeId, p.jobId, preload))),
+        )
+        for (const r of computed) {
+          if (r.status === 'fulfilled') results.push(r.value)
         }
       }
     } else {
@@ -764,29 +776,90 @@ export class MatchingService {
       if (myJobs.length === 0) return []
 
       const resumeDocs = await this.docRepo.find({ where: { docType: 'resume', status: 'parsed' } })
+      const resumeIds = resumeDocs.map((d) => d.id)
+      const jobIds = myJobs.map((d) => d.id)
+
+      // Batch load all existing non-stale match results in one query
+      const existingMatches = await this.matchRepo
+        .createQueryBuilder('mr')
+        .where('mr.resumeDocId IN (:...resumeIds) AND mr.jobDocId IN (:...jobIds)', { resumeIds, jobIds })
+        .andWhere('mr.staleAt IS NULL')
+        .orderBy('mr.createdAt', 'DESC')
+        .getMany()
+      const matchCache = new Map<string, MatchResult>()
+      for (const m of existingMatches) {
+        const key = `${m.resumeDocId}-${m.jobDocId}`
+        if (!matchCache.has(key)) matchCache.set(key, m)
+      }
+
+      // Pre-load all data needed by calculateMatch
+      const allDocIds = [...new Set([...resumeIds, ...jobIds])]
+      const preload = await this.buildPreload(allDocIds, [...resumeDocs, ...myJobs])
+
+      // Separate cached hits from pairs that need computation
+      const missing: Array<{ resumeId: string; jobId: string }> = []
       for (const myJob of myJobs) {
         for (const resumeDoc of resumeDocs) {
           const key = `${resumeDoc.id}-${myJob.id}`
           if (seen.has(key)) continue
           seen.add(key)
 
-          const existing = await this.matchRepo.findOne({
-            where: { resumeDocId: resumeDoc.id, jobDocId: myJob.id },
-          })
-          if (existing && existing.staleAt == null) {
-            results.push(existing)
+          const cached = matchCache.get(key)
+          if (cached) {
+            results.push(cached)
           } else {
-            try {
-              results.push(await this.calculateMatch(resumeDoc.id, myJob.id))
-            } catch (err) {
-              console.error(`[Matching] calculateMatch failed for resume=${resumeDoc.id.slice(0, 8)} job=${myJob.id.slice(0, 8)}: ${(err as Error).message}`)
-            }
+            missing.push({ resumeId: resumeDoc.id, jobId: myJob.id })
           }
+        }
+      }
+
+      // Compute missing matches in parallel (max 5 concurrent)
+      if (missing.length > 0) {
+        const pLimit = (await import('p-limit')).default
+        const limit = pLimit(5)
+        const computed = await Promise.allSettled(
+          missing.map((p) => limit(() => this.calculateMatch(p.resumeId, p.jobId, preload))),
+        )
+        for (const r of computed) {
+          if (r.status === 'fulfilled') results.push(r.value)
         }
       }
     }
 
     return this.enrichResults(results.sort((a, b) => b.overallScore - a.overallScore))
+  }
+
+  /** Batch-load all data needed by calculateMatch to avoid per-pair queries */
+  private async buildPreload(allDocIds: string[], docs: Document[]): Promise<MatchPreload> {
+    const [allSkills, allUsers] = await Promise.all([
+      this.dsRepo.find({ where: { documentId: In(allDocIds) }, relations: ['skill'] }),
+      this.userRepo.find({ where: { id: In([...new Set(docs.map((d) => d.userId).filter(Boolean))]) } }),
+    ])
+
+    // Build skills-by-document map
+    const skillsByDoc = new Map<string, DocumentSkill[]>()
+    for (const s of allSkills) {
+      const arr = skillsByDoc.get(s.documentId) || []
+      arr.push(s)
+      skillsByDoc.set(s.documentId, arr)
+    }
+
+    // Build doc map
+    const docMap = new Map(docs.map((d) => [d.id, d]))
+
+    // Build user map
+    const userMap = new Map(allUsers.map((u) => [u.id, u]))
+
+    // Build skill metadata map (all unique skill IDs across all docs)
+    const allSkillIds = new Set<number>()
+    for (const s of allSkills) allSkillIds.add(s.skillId)
+    const skillMetaMap = new Map<number, Skill>()
+    if (allSkillIds.size > 0) {
+      const skillEntities = await this.skillRepo.findBy([...allSkillIds].map((id) => ({ id })))
+      for (const s of skillEntities) skillMetaMap.set(s.id, s)
+    }
+
+    return { docMap, skillsByDoc, userMap, skillMetaMap }
   }
 
   async getResults(userId: string): Promise<EnrichedMatch[]> {
@@ -840,24 +913,47 @@ export class MatchingService {
   // ══════════════════════════════════════════════════════════════
 
   private async enrichResults(results: MatchResult[]): Promise<EnrichedMatch[]> {
+    if (results.length === 0) return []
+
+    // Collect unique IDs
+    const resumeDocIds = [...new Set(results.map((r) => r.resumeDocId))]
+    const jobDocIds = [...new Set(results.map((r) => r.jobDocId))]
+    const allDocIds = [...new Set([...resumeDocIds, ...jobDocIds])]
+
+    // Batch fetch: documents (1 query), users (1 query), skills (1 query) = 3 total
+    const [docs, allSkills] = await Promise.all([
+      this.docRepo.findByIds(allDocIds),
+      this.dsRepo.find({ where: { documentId: In(allDocIds) }, relations: ['skill'] }),
+    ])
+
+    const docMap = new Map(docs.map((d) => [d.id, d]))
+
+    // Collect unique user IDs from fetched docs
+    const userIds = [...new Set(docs.map((d) => d.userId).filter(Boolean))]
+    const users = userIds.length > 0
+      ? await this.userRepo.findByIds(userIds)
+      : []
+    const userMap = new Map(users.map((u) => [u.id, u]))
+
+    // Group skills by documentId
+    const skillsByDoc = new Map<string, typeof allSkills>()
+    for (const s of allSkills) {
+      const arr = skillsByDoc.get(s.documentId) || []
+      arr.push(s)
+      skillsByDoc.set(s.documentId, arr)
+    }
+
     const enriched: EnrichedMatch[] = []
     for (const r of results) {
-      try {
-        const [resumeDoc, jobDoc] = await Promise.all([
-          this.docRepo.findOne({ where: { id: r.resumeDocId } }),
-          this.docRepo.findOne({ where: { id: r.jobDocId } }),
-        ])
-        if (!resumeDoc || !jobDoc) continue
+      const resumeDoc = docMap.get(r.resumeDocId)
+      const jobDoc = docMap.get(r.jobDocId)
+      if (!resumeDoc || !jobDoc) continue
 
-      const [candidate, company] = await Promise.all([
-        this.userRepo.findOne({ where: { id: resumeDoc.userId } }),
-        this.userRepo.findOne({ where: { id: jobDoc.userId } }),
-      ])
+      const candidate = userMap.get(resumeDoc.userId)
+      const company = userMap.get(jobDoc.userId)
 
-      const [resumeSkills, jobSkills] = await Promise.all([
-        this.dsRepo.find({ where: { documentId: r.resumeDocId }, take: 6 }),
-        this.dsRepo.find({ where: { documentId: r.jobDocId }, take: 6 }),
-      ])
+      const resumeSkills = (skillsByDoc.get(r.resumeDocId) || []).slice(0, 6)
+      const jobSkills = (skillsByDoc.get(r.jobDocId) || []).slice(0, 6)
 
       const jobParsed = (jobDoc.parsedJson as any)?.structured || {}
       const resumeParsed = (resumeDoc.parsedJson as any)?.structured || {}
@@ -887,62 +983,8 @@ export class MatchingService {
         jobCity: company?.city || jobParsed?.location || jobParsed?.city || '',
         jobTopSkills: jobSkills.map((s) => s.skillName || s.skill?.name || '').filter(Boolean),
       })
-      } catch (err) {
-        console.error(`[Matching] enrichResult failed for match=${r.id}: ${(err as Error).message}`)
-        // continue to next result
-      }
     }
     return enriched
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  //  LLM semantic matching
-  // ══════════════════════════════════════════════════════════════
-
-  private async llmSemanticMatch(
-    jobSkills: NamedSkill[],
-    resumeSkills: NamedSkill[],
-  ): Promise<Array<{ jobIdx: number; resumeIdx: number; confidence: number }>> {
-    if (jobSkills.length === 0 || resumeSkills.length === 0) return []
-
-    const jobList = jobSkills.map((s, i) => `${i + 1}. ${s.name}`).join('\n')
-    const resumeList = resumeSkills.map((s, i) => `${i + 1}. ${s.name}`).join('\n')
-
-    const prompt = `判断以下岗位技能(A)和候选人技能(B)之间是否存在语义等价关系（同一技能的不同表述）。返回JSON数组，只包含确实等价的匹配对。
-
-岗位技能(A):
-${jobList}
-
-候选人技能(B):
-${resumeList}
-
-规则：
-- 同义/翻译/缩写视为等价：如"K8s"="Kubernetes"，"agent工作流设计"="智能体工作流编排"
-- 子领域/包含关系也算等价：如"YOLO目标检测"⊂"目标检测"
-- 不要强行匹配不相关的技能
-- confidence: 0.85-1.0表示高度等价，0.7-0.84表示相关但不等价
-
-返回纯JSON数组：
-[{"a": 编号, "b": 编号, "confidence": 0.9}, ...]`
-
-    try {
-      const result = await this.llmService.callLLMForJsonArrayStream(
-        '你是技能语义匹配专家。只返回JSON数组。', prompt,
-      )
-      const matches: Array<{ jobIdx: number; resumeIdx: number; confidence: number }> = []
-      for (const item of result) {
-        const a = Number(item.a || item.jobIdx) - 1 // 1-indexed → 0-indexed
-        const b = Number(item.b || item.resumeIdx) - 1
-        const conf = Number(item.confidence) || 0.8
-        if (a >= 0 && a < jobSkills.length && b >= 0 && b < resumeSkills.length && conf >= 0.7) {
-          matches.push({ jobIdx: a, resumeIdx: b, confidence: conf })
-        }
-      }
-      return matches
-    } catch (err) {
-      console.warn(`[Matching] LLM semantic matching error: ${(err as Error).message}`)
-      return []
-    }
   }
 
   private calcProficiencyScore(person?: string, required?: string): number {

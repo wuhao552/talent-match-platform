@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common'
+import { createHash } from 'crypto'
 
 export interface ExtractedSkill {
   name: string
@@ -26,6 +27,31 @@ export class LlmService {
   private readonly flashModel = 'deepseek-v4-flash'
   private readonly proModel = process.env.LLM_MODEL || 'deepseek-v4-pro'
 
+  // In-memory LLM response cache: keyed by text hash + method + model
+  private readonly _cache = new Map<string, { value: string; expires: number }>()
+  private readonly CACHE_TTL = 30 * 60 * 1000 // 30 minutes
+  private readonly CACHE_MAX = 100
+
+  private cacheKey(method: string, text: string, model: string): string {
+    const hash = createHash('sha256').update(text).digest('hex').slice(0, 16)
+    return `${method}:${model}:${hash}`
+  }
+
+  private cacheGet(key: string): string | null {
+    const entry = this._cache.get(key)
+    if (!entry) return null
+    if (Date.now() > entry.expires) { this._cache.delete(key); return null }
+    return entry.value
+  }
+
+  private cacheSet(key: string, value: string): void {
+    if (this._cache.size >= this.CACHE_MAX) {
+      const oldest = this._cache.keys().next().value
+      if (oldest) this._cache.delete(oldest)
+    }
+    this._cache.set(key, { value, expires: Date.now() + this.CACHE_TTL })
+  }
+
   /**
    * 技能提取 — 简单任务，用 flash 模型
    */
@@ -50,7 +76,14 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
         rawResponse = chunk.fullText
       }
     } else {
-      rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+      const ck = this.cacheKey('extractSkills', userMessage, this.flashModel)
+      const cached = this.cacheGet(ck)
+      if (cached) {
+        rawResponse = cached
+      } else {
+        rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+        this.cacheSet(ck, rawResponse)
+      }
     }
 
     const latencyMs = Date.now() - startTime
@@ -115,7 +148,14 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
         rawResponse = chunk.fullText
       }
     } else {
-      rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+      const ck = this.cacheKey('parseDocument', userMessage, this.flashModel)
+      const cached = this.cacheGet(ck)
+      if (cached) {
+        rawResponse = cached
+      } else {
+        rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+        this.cacheSet(ck, rawResponse)
+      }
     }
 
     const latencyMs = Date.now() - startTime
@@ -179,7 +219,14 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
         rawResponse = chunk.fullText
       }
     } else {
-      rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+      const ck = this.cacheKey('parseJobDescription', userMessage, this.flashModel)
+      const cached = this.cacheGet(ck)
+      if (cached) {
+        rawResponse = cached
+      } else {
+        rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+        this.cacheSet(ck, rawResponse)
+      }
     }
 
     const latencyMs = Date.now() - startTime
@@ -231,7 +278,14 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
         rawResponse = chunk.fullText
       }
     } else {
-      rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+      const ck = this.cacheKey('extractJobSkills', userMessage, this.flashModel)
+      const cached = this.cacheGet(ck)
+      if (cached) {
+        rawResponse = cached
+      } else {
+        rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
+        this.cacheSet(ck, rawResponse)
+      }
     }
 
     const latencyMs = Date.now() - startTime

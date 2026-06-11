@@ -57,8 +57,7 @@ export class DocumentController {
     @CurrentUser() user: { id: string },
   ) {
     const doc = await this.documentService.create(file, docType as 'resume' | 'job_description', user.id)
-    // Trigger async parsing
-    this.documentService.parseDocument(doc.id).catch(console.error)
+    // Don't parse here — SSE /graph/:id will trigger parseDocumentStream instead
     return { code: 200, message: '上传成功', data: doc }
   }
 
@@ -99,6 +98,15 @@ export class DocumentController {
   async list(@CurrentUser() user: { id: string }) {
     const docs = await this.documentService.findByUser(user.id)
     return { code: 200, message: 'ok', data: docs }
+  }
+
+  @Get('skills/batch')
+  @UseGuards(JwtAuthGuard)
+  async getSkillsBatch(@Query('ids') ids: string | string[]) {
+    const idList = Array.isArray(ids) ? ids : (ids || '').split(',').map((s) => s.trim()).filter(Boolean)
+    if (idList.length === 0) return { code: 200, message: 'ok', data: [] }
+    const skills = await this.documentService.getDocumentSkillsBatch(idList)
+    return { code: 200, message: 'ok', data: skills }
   }
 
   @Get(':id')
@@ -175,7 +183,13 @@ export class DocumentController {
       const doc = await this.documentService.findById(id)
       send('start', { documentId: id, filename: doc.originalFilename, userId })
 
-      const result = await this.documentService.parseDocumentStream(id, onProgress, onChunk)
+      // Skip re-parsing if already parsed (e.g. background parseDocument finished first)
+      let result
+      if (doc.status === 'parsed') {
+        result = { success: true, data: { parsedText: doc.parsedText, parsedJson: doc.parsedJson, extractedSkills: [], mappedSkills: [], unmatchedSkills: [], pipelineSteps: [] }, summary: '已解析' }
+      } else {
+        result = await this.documentService.parseDocumentStream(id, onProgress, onChunk)
+      }
 
       send('complete', {
         success: result.success,

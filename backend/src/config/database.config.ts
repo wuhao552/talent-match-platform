@@ -4,14 +4,21 @@ import type { TypeOrmModuleOptions } from '@nestjs/typeorm'
 export default registerAs(
   'database',
   (): TypeOrmModuleOptions => ({
-    type: 'postgres',
+    type: 'postgres', // KingbaseES pg 兼容模式，使用 postgres 驱动
     host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT || '5432', 10),
-    username: process.env.DB_USERNAME || 'postgres',
+    port: parseInt(process.env.DB_PORT || '54321', 10),
+    username: process.env.DB_USERNAME || 'system',
     password: process.env.DB_PASSWORD || '123456',
     database: process.env.DB_DATABASE || 'talent_match',
     entities: [__dirname + '/../**/*.entity{.ts,.js}'],
-    synchronize: true, // dev only, disable in production
+    synchronize: false, // 已手动同步 schema，避免有数据时列约束变更失败
     logging: false,
+    poolSize: 15,
+    extra: {
+      max: 15,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+      options: '-c search_path=public',
+    },
   }),
 )

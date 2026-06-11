@@ -38,7 +38,11 @@ export class OrchestratorAgent {
     onChunk?: ChunkCallback,
   ): Promise<AgentResult> {
     const sessionId = `parse-${document.id}`
-    const emit = (step: PipelineStep) => onProgress?.(step)
+    const collectedSteps: PipelineStep[] = []
+    const emit = (step: PipelineStep) => {
+      collectedSteps.push(step)
+      onProgress?.(step)
+    }
 
     // Step 0: Extract raw text (prerequisite for both agents)
     emit({ agent: 'text_extractor', status: 'running', summary: '正在读取文档文本...', timestamp: Date.now() })
@@ -59,7 +63,7 @@ export class OrchestratorAgent {
     emit({
       agent: 'text_extractor', status: 'done',
       summary: `文本提取完成: ${parsedText.length} 字符`,
-      data: { textLength: parsedText.length, textPreview: parsedText.slice(0, 200) },
+      data: { textLength: parsedText.length, textPreview: parsedText },
       timestamp: Date.now(),
     })
 
@@ -166,6 +170,7 @@ export class OrchestratorAgent {
         skillLlmDetail,
         mappedSkills,
         unmatchedSkills,
+        pipelineSteps: collectedSteps,
       },
       summary: [
         parseResult.summary,

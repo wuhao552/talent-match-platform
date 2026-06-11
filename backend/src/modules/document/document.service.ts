@@ -1,7 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
+import { Repository, In } from 'typeorm'
 import { extname } from 'path'
+import * as fsp from 'fs/promises'
 import { Document, DocType, FileFormat } from './document.entity'
 import { DocumentSkill } from '../skill/document-skill.entity'
 import { Skill } from '../skill/skill.entity'
@@ -52,12 +53,14 @@ export class DocumentService {
   }
 
   async createBatch(files: Express.Multer.File[], docType: DocType, userId: string): Promise<Document[]> {
+    const pLimit = (await import('p-limit')).default
+    const limit = pLimit(3)
     const docs: Document[] = []
     for (const file of files) {
       const doc = await this.create(file, docType, userId)
       docs.push(doc)
-      // Trigger async parsing for each
-      this.parseDocument(doc.id).catch(console.error)
+      // Trigger async parsing with concurrency limit
+      limit(() => this.parseDocument(doc.id).catch(console.error))
     }
     return docs
   }
@@ -88,6 +91,11 @@ export class DocumentService {
       await this.neo4j.deleteJobPosition(id).catch(() => {})
     }
 
+    // Clean up the uploaded file from disk
+    if (doc.filePath) {
+      await fsp.unlink(doc.filePath).catch(() => {})
+    }
+
     await this.docRepo.remove(doc)
   }
 
@@ -114,20 +122,24 @@ export class DocumentService {
       const result = await this.orchestrator.runParsePipeline(doc)
       await this.saveParseResult(doc, result)
     } catch (err) {
-      doc.status = 'failed'
-      doc.errorMessage = err instanceof Error ? err.message : '解析失败'
+      // Use QueryBuilder to avoid TypeORM entity tracker updating stale relations
+      await this.docRepo
+        .createQueryBuilder()
+        .update(Document)
+        .set({ status: 'failed', errorMessage: err instanceof Error ? err.message : '解析失败' } as any)
+        .where('id = :id', { id: documentId })
+        .execute()
     }
-    await this.docRepo.save(doc)
   }
 
   private async saveParseResult(doc: Document, result: AgentResult) {
-    doc.parsedText = result.data['parsedText'] as string
+    const parsedText = result.data['parsedText'] as string
 
     const llmParseDetail = result.data['llmParseDetail']
     const skillLlmDetail = result.data['skillLlmDetail']
     const structuredInfo = result.data['parsedJson'] as Record<string, unknown> | null
 
-    doc.parsedJson = {
+    const parsedJson = {
       structured: structuredInfo || null,
       unmatchedSkills: (result.data['unmatchedSkills'] as any[]) || [],
       pipeline: (result.data['pipelineSteps'] as any[]) || [],
@@ -146,34 +158,61 @@ export class DocumentService {
         } : null,
       },
     }
-    doc.status = 'parsed'
 
     const skills = (result.data['extractedSkills'] as any[]) || []
     const mappedSkills = (result.data['mappedSkills'] as any[]) || []
 
+    // Use QueryBuilder to update document directly, bypassing TypeORM entity tracking
+    // which causes spurious UPDATE on document_skills with null document_id
+    await this.docRepo
+      .createQueryBuilder()
+      .update(Document)
+      .set({ parsedText, parsedJson, status: 'parsed' } as any)
+      .where('id = :id', { id: doc.id })
+      .execute()
+
     await this.dsRepo.delete({ documentId: doc.id })
 
     const savedSkillIds = new Set<number>()
+
+    // Batch: fetch all existing mapped skills in one query
+    const mappedIds = [...new Set(mappedSkills.map((ms: any) => ms.skillId).filter(Boolean))]
+    const existingSkills = mappedIds.length > 0
+      ? await this.skillRepo.findBy(mappedIds.map((id: number) => ({ id })))
+      : []
+    const existingSkillMap = new Map(existingSkills.map((s) => [s.id, s]))
+
+    // Determine which skills need to be created
+    const skillsToCreate: Skill[] = []
     for (let i = 0; i < mappedSkills.length; i++) {
       const ms = mappedSkills[i]
-      // Skip if this skillId already saved for this document (belt-and-suspenders dedup)
+      if (savedSkillIds.has(ms.skillId) || existingSkillMap.has(ms.skillId)) continue
+      const es = skills[i] as any
+      const skillName = es?.name || ms.name || ''
+      skillsToCreate.push(this.skillRepo.create({
+        id: ms.skillId,
+        name: skillName,
+        category: this.skillSeedService.inferCategory(skillName) || undefined,
+      } as Skill))
+    }
+    if (skillsToCreate.length > 0) {
+      const created = await this.skillRepo.save(skillsToCreate)
+      for (const s of created) existingSkillMap.set(s.id, s)
+    }
+
+    // Batch: create all DocumentSkill records
+    const docSkillsToSave: DocumentSkill[] = []
+    for (let i = 0; i < mappedSkills.length; i++) {
+      const ms = mappedSkills[i]
       if (savedSkillIds.has(ms.skillId)) continue
       savedSkillIds.add(ms.skillId)
       const es = skills[i] as any
-      let skill = await this.skillRepo.findOne({ where: { id: ms.skillId } })
-      if (!skill) {
-        const skillName = es?.name || ms.name || ''
-        skill = this.skillRepo.create({
-          id: ms.skillId,
-          name: skillName,
-          category: this.skillSeedService.inferCategory(skillName) || undefined,
-        } as Skill)
-        await this.skillRepo.save(skill)
-      } else if (!skill.category) {
-        skill.category = this.skillSeedService.inferCategory(skill.name || '') || undefined as any
-        if (skill.category) await this.skillRepo.save(skill)
+      const skill = existingSkillMap.get(ms.skillId)
+      if (skill && !skill.category) {
+        const inferred = this.skillSeedService.inferCategory(skill.name || '')
+        if (inferred) { skill.category = inferred as any; await this.skillRepo.save(skill) }
       }
-      const ds = this.dsRepo.create({
+      docSkillsToSave.push(this.dsRepo.create({
         documentId: doc.id, skillId: ms.skillId,
         skillName: es?.name || ms.name || undefined,
         proficiency: (ms.proficiency as any) || 'intermediate',
@@ -181,10 +220,62 @@ export class DocumentService {
         sourceText: es?.sourceText || '',
         extractionMethod: 'llm',
         category: this.skillSeedService.inferCategory(es?.name || ms.name || '') || null as any,
-      })
-      await this.dsRepo.save(ds)
+      }))
     }
-    await this.docRepo.save(doc)
+    if (docSkillsToSave.length > 0) await this.dsRepo.save(docSkillsToSave)
+
+    // Save unmatched skills: batch find by name, batch create, batch save DocumentSkill
+    const unmatched = (result.data['unmatchedSkills'] as any[]) || []
+    try {
+      const validUnmatched = unmatched.filter((u) => u.name?.trim())
+      if (validUnmatched.length > 0) {
+        // Batch find existing skills by lowercase name
+        const names = [...new Set(validUnmatched.map((u) => u.name.trim()))]
+        const existingByName = names.length > 0
+          ? await this.skillRepo
+              .createQueryBuilder('s')
+              .where('LOWER(s.name) IN (:...names)', { names: names.map((n) => n.toLowerCase()) })
+              .getMany()
+          : []
+        const byLowerName = new Map(existingByName.map((s) => [s.name.toLowerCase(), s]))
+
+        const unmatchedToCreate: Skill[] = []
+        for (const u of validUnmatched) {
+          const name = u.name.trim()
+          if (!byLowerName.has(name.toLowerCase())) {
+            unmatchedToCreate.push(this.skillRepo.create({
+              name,
+              category: this.skillSeedService.inferCategory(name) || undefined,
+            } as Skill))
+          }
+        }
+        if (unmatchedToCreate.length > 0) {
+          const created = await this.skillRepo.save(unmatchedToCreate)
+          for (const s of created) byLowerName.set(s.name.toLowerCase(), s)
+        }
+
+        const unmatchedDocSkills: DocumentSkill[] = []
+        for (const u of validUnmatched) {
+          const name = u.name.trim()
+          const skill = byLowerName.get(name.toLowerCase())
+          if (!skill || savedSkillIds.has(skill.id)) continue
+          savedSkillIds.add(skill.id)
+          unmatchedDocSkills.push(this.dsRepo.create({
+            documentId: doc.id,
+            skillId: skill.id,
+            skillName: name,
+            proficiency: (u.proficiency as any) || 'intermediate',
+            confidence: 0.80,
+            sourceText: '',
+            extractionMethod: 'llm',
+            category: skill.category || null as any,
+          }))
+        }
+        if (unmatchedDocSkills.length > 0) await this.dsRepo.save(unmatchedDocSkills)
+      }
+    } catch (err) {
+      console.error(`[Document] Failed to save unmatched skills for ${doc.id}:`, (err as Error).message)
+    }
 
     // Fire-and-forget: build Neo4j graph for resumes only (Person skill graph)
     if (mappedSkills.length > 0 && doc.docType === 'resume') {
@@ -207,6 +298,14 @@ export class DocumentService {
   async getDocumentSkills(documentId: string): Promise<DocumentSkill[]> {
     return this.dsRepo.find({
       where: { documentId },
+      relations: ['skill'],
+    })
+  }
+
+  async getDocumentSkillsBatch(documentIds: string[]): Promise<DocumentSkill[]> {
+    if (documentIds.length === 0) return []
+    return this.dsRepo.find({
+      where: { documentId: In(documentIds) },
       relations: ['skill'],
     })
   }

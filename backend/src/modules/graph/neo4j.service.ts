@@ -67,6 +67,34 @@ export class Neo4jService implements OnModuleDestroy {
     )
   }
 
+  async addPersonSkills(userId: string, skills: Array<{ skillId: number; skillName: string; proficiency?: string }>) {
+    if (skills.length === 0) return
+    const session = this.getSession()
+    try {
+      await session.executeWrite((tx) =>
+        tx.run(
+          `MERGE (p:Person {userId: $userId})
+           WITH p
+           UNWIND $skills AS sk
+           MERGE (s:Skill {id: sk.skillId})
+           SET s.name = COALESCE(s.name, sk.skillName)
+           MERGE (p)-[r:HAS_SKILL]->(s)
+           SET r.proficiency = sk.proficiency`,
+          {
+            userId,
+            skills: skills.map((s) => ({
+              skillId: s.skillId,
+              skillName: s.skillName,
+              proficiency: s.proficiency || 'intermediate',
+            })),
+          },
+        ),
+      )
+    } finally {
+      await session.close()
+    }
+  }
+
   async addJobSkill(
     documentId: string, skillId: number, skillName: string,
     importance?: string, proficiency?: string,
@@ -80,6 +108,38 @@ export class Neo4jService implements OnModuleDestroy {
            r.proficiency = $proficiency`,
       { documentId, skillId, skillName, importance: importance || 'required', proficiency: proficiency || 'intermediate' },
     )
+  }
+
+  async addJobSkills(
+    documentId: string, skills: Array<{ skillId: number; skillName: string; importance?: string; proficiency?: string }>,
+  ) {
+    if (skills.length === 0) return
+    const session = this.getSession()
+    try {
+      await session.executeWrite((tx) =>
+        tx.run(
+          `MERGE (j:JobPosition {documentId: $documentId})
+           WITH j
+           UNWIND $skills AS sk
+           MERGE (s:Skill {id: sk.skillId})
+           SET s.name = COALESCE(s.name, sk.skillName)
+           MERGE (j)-[r:REQUIRES_SKILL]->(s)
+           SET r.importance = sk.importance,
+               r.proficiency = sk.proficiency`,
+          {
+            documentId,
+            skills: skills.map((s) => ({
+              skillId: s.skillId,
+              skillName: s.skillName,
+              importance: s.importance || 'required',
+              proficiency: s.proficiency || 'intermediate',
+            })),
+          },
+        ),
+      )
+    } finally {
+      await session.close()
+    }
   }
 
   async getPersonGraph(userId: string) {
@@ -227,7 +287,8 @@ export class Neo4jService implements OnModuleDestroy {
               coalesce(r.freq_SKILL, 0) AS freqSkill,
               coalesce(r.freq_COMPANY, 0) AS freqCompany,
               coalesce(r.freq_L2_OCCUPATION, 0) AS freqL2
-       ORDER BY coalesce(r.freq_SKILL, 0) DESC`,
+       ORDER BY coalesce(r.freq_SKILL, 0) DESC
+       LIMIT 500`,
       {
         sourceIds: sourceSkillIds.map((id: number) => int(id)),
         targetIds: targetSkillIds.map((id: number) => int(id)),

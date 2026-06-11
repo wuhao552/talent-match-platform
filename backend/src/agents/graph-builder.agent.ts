@@ -26,22 +26,22 @@ export class GraphBuilderAgent implements IAgent {
     }
 
     try {
+      // Batch: ensure all Skill records exist in PG
+      await this.skillService.getOrCreateBatch(
+        skills.map((s) => ({ skillId: s.skillId, name: s.name })),
+      )
+
+      // Batch: write all relationships to Neo4j in a single transaction
       if (docType === 'resume') {
-        for (const skill of skills) {
-          await this.skillService.getOrCreate(skill.skillId, skill.name)
-          await this.neo4j.addPersonSkill(userId, skill.skillId, skill.name, skill.proficiency)
-        }
+        await this.neo4j.addPersonSkills(
+          userId,
+          skills.map((s) => ({ skillId: s.skillId, skillName: s.name, proficiency: s.proficiency })),
+        )
       } else {
-        for (const skill of skills) {
-          await this.skillService.getOrCreate(skill.skillId, skill.name)
-          await this.neo4j.addJobSkill(
-            documentId,
-            skill.skillId,
-            skill.name,
-            'required',
-            skill.proficiency,
-          )
-        }
+        await this.neo4j.addJobSkills(
+          documentId,
+          skills.map((s) => ({ skillId: s.skillId, skillName: s.name, proficiency: s.proficiency })),
+        )
       }
 
       return {
