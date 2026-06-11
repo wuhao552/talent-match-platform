@@ -6,13 +6,14 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { scoreColor } from '@/lib/utils'
 import { ChevronLeft, ChevronRight, Activity } from 'lucide-react'
-import type { Document, MatchResult } from '@/types'
+import type { Document, DocumentSkill, MatchResult } from '@/types'
 
 export function ResumeDetail() {
   const { resumeDocId } = useParams<{ resumeDocId: string }>()
   const navigate = useNavigate()
   const [resume, setResume] = useState<Document | null>(null)
   const [matches, setMatches] = useState<MatchResult[]>([])
+  const [skills, setSkills] = useState<DocumentSkill[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -20,6 +21,7 @@ export function ResumeDetail() {
     Promise.all([
       documentApi.get(resumeDocId).then((r) => setResume(r.data)),
       matchingApi.getByResume(resumeDocId).then((r) => setMatches(r.data)).catch(() => {}),
+      documentApi.getSkills(resumeDocId).then((r) => setSkills(r.data)).catch(() => {}),
     ]).finally(() => setLoading(false))
   }, [resumeDocId])
 
@@ -56,11 +58,11 @@ export function ResumeDetail() {
       {Object.keys(structured).length > 0 && (
         <div className="grid grid-cols-3 gap-2">
           {Object.entries(structured as Record<string, unknown>)
-            .filter(([k, v]) => !['skills', 'education', 'experience', 'summary'].includes(k) && v != null && typeof v !== 'object')
+            .filter(([k, v]) => !['skills', 'education', 'experience', 'summary'].includes(k) && typeof v !== 'object')
             .map(([k, v]) => (
               <div key={k} className="rounded-lg border px-3 py-2">
                 <p className="text-[10px] text-muted-foreground">{k}</p>
-                <p className="text-sm font-medium truncate">{String(v)}</p>
+                <p className="text-sm font-medium truncate">{v == null ? '未提取' : String(v)}</p>
               </div>
             ))}
         </div>
@@ -72,8 +74,8 @@ export function ResumeDetail() {
 
       {/* Skills from the resume */}
       <div className="flex flex-wrap gap-1.5">
-        {Array.isArray(structured.skills) && (structured.skills as string[]).map((s, i) => (
-          <Badge key={i} variant="secondary" className="text-[11px]">{s}</Badge>
+        {skills.map((s, i) => (
+          <Badge key={i} variant="secondary" className="text-[11px]">{s.skillName || `技能#${s.skillId}`}</Badge>
         ))}
       </div>
 

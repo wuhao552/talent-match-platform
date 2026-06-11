@@ -94,33 +94,24 @@ export function MatchingResult() {
       <Card>
         <CardHeader>
           <div className="flex items-start justify-between">
-            <div>
-              <CardTitle className="text-xl">{match.jobTitle || match.jobFilename}</CardTitle>
+            <div className="min-w-0 flex-1">
+              <CardTitle className="text-xl leading-tight">{match.jobTitle || match.jobFilename}</CardTitle>
               <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
                 {match.companyName && <span className="flex items-center gap-1"><Building className="h-3.5 w-3.5" />{match.companyName}</span>}
                 {match.jobCity && <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{match.jobCity}</span>}
                 {jobDoc?.createdAt && <span className="flex items-center gap-1"><Clock className="h-3.5 w-3.5" />{new Date(jobDoc.createdAt).toLocaleDateString('zh-CN')}</span>}
+                {jobStructured.salary && <span className="font-medium text-foreground">{String(jobStructured.salary)}</span>}
+                {jobStructured.education && <span>{String(jobStructured.education)}</span>}
+                {(jobStructured.experience || jobStructured.workYears) && <span>{String(jobStructured.experience || jobStructured.workYears)}</span>}
               </div>
             </div>
-            <div className="text-center">
+            <div className="ml-4 shrink-0 text-center">
               <p className={`text-2xl font-bold tabular-nums ${scoreColor(match.overallScore)}`}>{Math.round(match.overallScore)}%</p>
               <p className="text-[10px] text-muted-foreground">匹配度</p>
             </div>
           </div>
         </CardHeader>
-        <CardContent className="space-y-6">
-          {Object.keys(jobStructured).length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {(Object.entries(jobStructured as Record<string, unknown>) as [string, string | number | boolean][])
-                .filter(([k, v]) => !['skills', 'education', 'experience', 'summary', 'title', 'name'].includes(k) && v != null && typeof v !== 'object')
-                .map(([k, v]) => (
-                  <div key={k} className="rounded-lg border px-3 py-1.5">
-                    <span className="text-[10px] text-muted-foreground mr-2">{k}</span>
-                    <span className="text-sm font-medium">{String(v)}</span>
-                  </div>
-                ))}
-            </div>
-          )}
+        <CardContent className="space-y-5">
           {match.jobTopSkills && match.jobTopSkills.length > 0 && (
             <div>
               <p className="mb-2 text-sm font-medium">技能要求</p>
@@ -130,15 +121,28 @@ export function MatchingResult() {
           {jobStructured.summary && (
             <div>
               <p className="mb-1.5 text-sm font-medium">职位描述</p>
-              <p className="text-sm text-muted-foreground leading-relaxed">{String(jobStructured.summary)}</p>
+              <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">{String(jobStructured.summary)}</p>
             </div>
           )}
-          {jobDoc?.parsedText && (
-            <div>
-              <p className="mb-1.5 text-sm font-medium">原始招聘信息</p>
-              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-muted p-4 text-xs leading-relaxed text-muted-foreground">{jobDoc.parsedText}</pre>
-            </div>
-          )}
+          {(() => {
+            const skipKeys = ['skills', 'education', 'experience', 'summary', 'title', 'name', 'company', 'companyName', 'location', 'city', 'salary', 'workYears']
+            const extraEntries = Object.entries(jobStructured as Record<string, unknown>)
+              .filter(([k, v]) => !skipKeys.includes(k) && v != null && typeof v !== 'object' && String(v).trim() !== '')
+            if (extraEntries.length === 0) return null
+            return (
+              <div>
+                <p className="mb-2 text-sm font-medium">其他信息</p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+                  {extraEntries.map(([k, v]) => (
+                    <div key={k} className="flex items-baseline gap-2">
+                      <span className="shrink-0 text-muted-foreground">{k}</span>
+                      <span className="truncate font-medium">{String(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
         </CardContent>
       </Card>
 

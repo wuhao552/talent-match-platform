@@ -8,27 +8,42 @@ import { Badge } from '@/components/ui/badge'
 import { scoreColor, DOC_TYPE_LABEL, STATUS_LABEL } from '@/lib/utils'
 import { FileText, Briefcase, Upload, ChevronRight, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
-import type { Document, MatchResult } from '@/types'
+import type { Document, DocumentSkill, MatchResult } from '@/types'
 
 export function Dashboard() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const [documents, setDocuments] = useState<Document[]>([])
   const [matches, setMatches] = useState<MatchResult[]>([])
+  const [skillsMap, setSkillsMap] = useState<Record<string, DocumentSkill[]>>({})
   const [loading, setLoading] = useState(true)
 
   const isIndividual = user?.role === 'individual'
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  const fetchSkills = async (docs: Document[]) => {
+    const parsedIds = docs.filter((d) => d.status === 'parsed').map((d) => d.id)
+    if (parsedIds.length === 0) return
+    try {
+      const res = await documentApi.getSkillsBatch(parsedIds)
+      const grouped: Record<string, DocumentSkill[]> = {}
+      for (const s of res.data) {
+        ;(grouped[s.documentId] ??= []).push(s)
+      }
+      setSkillsMap(grouped)
+    } catch { /* ignore */ }
+  }
+
   const fetchData = async () => {
     try {
-      const [docRes, matchRes] = await Promise.all([
-        documentApi.list(),
-        matchingApi.recommend().catch(() => ({ data: [] as MatchResult[] })),
-      ])
+      // Load documents first (fast) so the page renders immediately
+      const docRes = await documentApi.list()
       setDocuments(docRes.data)
-      setMatches(matchRes.data)
-    } finally {
+      setLoading(false)
+      // Load skills and recommend in parallel, in the background
+      fetchSkills(docRes.data)
+      matchingApi.recommend().then((m) => setMatches(m.data)).catch(() => {})
+    } catch {
       setLoading(false)
     }
   }
@@ -48,7 +63,8 @@ export function Dashboard() {
           if (!stillPending && intervalRef.current) {
             clearInterval(intervalRef.current)
             intervalRef.current = null
-            // Refresh matches when parsing is done
+            // Refresh skills when parsing is done (recommend will be fetched separately)
+            fetchSkills(r.data)
             matchingApi.recommend().then((m) => setMatches(m.data)).catch(() => {})
           }
         })
@@ -120,6 +136,7 @@ export function Dashboard() {
             {myResumes.map((resume) => {
               const resumeMatches = matches.filter((m) => m.resumeDocId === resume.id)
               const parsed = (resume.parsedJson as any)?.structured || {}
+              const resumeSkills = skillsMap[resume.id] || []
               const topMatch = resumeMatches[0]
               const isPending = resume.status === 'uploaded' || resume.status === 'parsing'
               return (
@@ -146,13 +163,13 @@ export function Dashboard() {
                             ? '正在解析中...'
                             : [parsed.title, parsed.city].filter(Boolean).join(' · ') || resume.originalFilename}
                         </p>
-                        {!isPending && Array.isArray(parsed.skills) && (parsed.skills as string[]).length > 0 && (
+                        {!isPending && resumeSkills.length > 0 && (
                           <div className="mt-1 flex flex-wrap gap-1">
-                            {(parsed.skills as string[]).slice(0, 5).map((s, i) => (
-                              <Badge key={i} variant="secondary" className="text-[10px]">{s}</Badge>
+                            {resumeSkills.slice(0, 5).map((s, i) => (
+                              <Badge key={i} variant="secondary" className="text-[10px]">{s.skillName || `技能#${s.skillId}`}</Badge>
                             ))}
-                            {(parsed.skills as string[]).length > 5 && (
-                              <span className="text-[10px] text-muted-foreground">+{(parsed.skills as string[]).length - 5}</span>
+                            {resumeSkills.length > 5 && (
+                              <span className="text-[10px] text-muted-foreground">+{resumeSkills.length - 5}</span>
                             )}
                           </div>
                         )}

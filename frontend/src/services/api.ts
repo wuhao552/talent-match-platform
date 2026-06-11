@@ -92,6 +92,8 @@ export const documentApi = {
     }),
   getSkills: (id: string) =>
     request<ApiResponse<DocumentSkill[]>>(`/documents/${id}/skills`),
+  getSkillsBatch: (ids: string[]) =>
+    request<ApiResponse<DocumentSkill[]>>(`/documents/skills/batch?${ids.map((id) => `ids=${encodeURIComponent(id)}`).join('&')}`),
 }
 
 // Skills

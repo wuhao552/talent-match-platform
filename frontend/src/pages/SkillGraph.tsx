@@ -57,6 +57,8 @@ function AgentStep({
 
   const rawResponse = s === 'done' ? String(step.data?.rawResponse ?? '') : ''
   const hasRaw = rawResponse.length > 0
+  const textPreview = s === 'done' && agent.key === 'text_extractor' ? String(step.data?.textPreview ?? '') : ''
+  const hasTextPreview = textPreview.length > 0
   const skillsList = s === 'done' && agent.key === 'skill_extractor' && Array.isArray(step.data?.skills) ? (step.data!.skills as any[]) : null
   const hasSkills = skillsList && skillsList.length > 0
   const isResolution = s === 'done' && agent.key === 'skill_resolution'
@@ -116,6 +118,12 @@ function AgentStep({
         {hasRaw && (
           <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/50 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
             {rawResponse}
+          </pre>
+        )}
+
+        {hasTextPreview && (
+          <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/50 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
+            {textPreview}
           </pre>
         )}
 
@@ -289,7 +297,20 @@ export function SkillGraph() {
       setTimeout(() => loadDoc(), 500)
     })
 
-    es.onerror = () => { es.close(); setPipelineDone(true); setPipelineExpanded(false) }
+    es.addEventListener('error', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        console.error('[SSE] parse error:', data.message)
+      } catch { /* ignore */ }
+    })
+
+    es.onerror = () => {
+      es.close()
+      setPipelineDone(true)
+      setPipelineExpanded(false)
+      // Always reload doc on SSE close (even on error) to pick up any saved data
+      setTimeout(() => loadDoc(), 500)
+    }
 
     return () => { es.close() }
   }, [document?.status, docId, token])
@@ -314,14 +335,26 @@ export function SkillGraph() {
   const isResume = document.docType === 'resume'
   const isProcessing = document.status === 'uploaded' || document.status === 'parsing'
   const structured = (document.parsedJson?.structured || {}) as Record<string, unknown>
+  const unmatchedSkills = ((document.parsedJson as any)?.unmatchedSkills || []) as Array<{ name: string; proficiency: string }>
+  // Merge matched + unmatched skills for the force graph
+  const graphSkills: DocumentSkill[] = [
+    ...skills,
+    ...unmatchedSkills.map((s, i) => ({
+      id: `unmatched-${i}`,
+      documentId: '',
+      skillId: -(i + 1),
+      skillName: s.name,
+      proficiency: (s.proficiency || 'intermediate') as DocumentSkill['proficiency'],
+    })),
+  ]
   const summary = typeof structured.summary === 'string' ? structured.summary : ''
   const eduList = Array.isArray(structured.education) ? (structured.education as any[]) : []
   const expList = Array.isArray(structured.experience) ? (structured.experience as any[]) : []
   const scalarFields: [string, string][] = []
   for (const [k, v] of Object.entries(structured)) {
     if (['summary', 'skills', 'education', 'experience'].includes(k)) continue
-    if (v == null || typeof v === 'object') continue
-    scalarFields.push([k, String(v)])
+    if (typeof v === 'object') continue
+    scalarFields.push([k, v == null ? '未提取' : String(v)])
   }
   const active = pipelineRunning
 
@@ -388,7 +421,7 @@ export function SkillGraph() {
           </TabsList>
 
           <TabsContent value="graph" className="pt-4">
-            <SkillForceGraph skills={skills} />
+            <SkillForceGraph skills={graphSkills} />
           </TabsContent>
 
           <TabsContent value="result" className="space-y-6 pt-4">
@@ -398,19 +431,24 @@ export function SkillGraph() {
                 <CardTitle className="text-base">
                   {isResume ? '个人技能清单' : '职位技能要求'}
                 </CardTitle>
-                <Badge variant="secondary" className="text-[11px]">{skills.length}</Badge>
+                <Badge variant="secondary" className="text-[11px]">{graphSkills.length}</Badge>
               </CardHeader>
               <CardContent>
-                {skills.length === 0 ? (
+                {graphSkills.length === 0 ? (
                   <p className="py-8 text-center text-muted-foreground">暂未提取到技能标签</p>
                 ) : (
                   <div className="divide-y">
-                    {skills.map((s, i) => (
+                    {graphSkills.map((s, i) => (
                       <div key={s.id || i} className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0">
                         <span className="text-sm font-medium">{s.skillName || `技能#${s.skillId}`}</span>
-                        <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${proficiencyColor[s.proficiency] || 'bg-muted'}`}>
-                          {proficiencyLabel[s.proficiency] || s.proficiency}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          {Number(s.skillId) < 0 && (
+                            <span className="text-[10px] text-muted-foreground">模糊匹配</span>
+                          )}
+                          <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${proficiencyColor[s.proficiency] || 'bg-muted'}`}>
+                            {proficiencyLabel[s.proficiency] || s.proficiency}
+                          </span>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -512,20 +550,6 @@ export function SkillGraph() {
               </Card>
             )}
 
-            {/* Raw parsed text */}
-            {document.parsedText && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">原始文本</CardTitle>
-                  <CardDescription>文档解析的纯文本输出</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-muted p-4 text-sm leading-relaxed">
-                    {document.parsedText}
-                  </pre>
-                </CardContent>
-              </Card>
-            )}
           </TabsContent>
         </Tabs>
       )}
