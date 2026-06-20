@@ -10,7 +10,6 @@ import { JwtService } from '@nestjs/jwt'
 import type { Response } from 'express'
 
 @Controller('matching')
-@UseGuards(JwtAuthGuard)
 export class MatchingController {
   constructor(
     private matchingService: MatchingService,
@@ -20,42 +19,48 @@ export class MatchingController {
   ) {}
 
   @Post('calculate')
+  @UseGuards(JwtAuthGuard)
   async calculate(@Body() body: { resumeDocId: string; jobDocId: string }) {
     const data = await this.matchingService.calculateMatch(body.resumeDocId, body.jobDocId)
     return { code: 200, message: '匹配完成', data }
   }
 
   @Post('recommend')
+  @UseGuards(JwtAuthGuard)
   async recommend(@CurrentUser() user: { id: string; role: string }) {
     const data = await this.matchingService.recommend(user.id, user.role)
     return { code: 200, message: 'ok', data }
   }
 
   @Get('results')
+  @UseGuards(JwtAuthGuard)
   async getResults(@CurrentUser() user: { id: string }) {
     const data = await this.matchingService.getResults(user.id)
     return { code: 200, message: 'ok', data }
   }
 
   @Get('results/:id')
+  @UseGuards(JwtAuthGuard)
   async getResult(@Param('id') id: string) {
     const data = await this.matchingService.getResult(id)
     return { code: 200, message: 'ok', data }
   }
 
   @Get('by-job/:jobDocId')
+  @UseGuards(JwtAuthGuard)
   async getByJob(@Param('jobDocId') jobDocId: string) {
     const data = await this.matchingService.getMatchesByJob(jobDocId)
     return { code: 200, message: 'ok', data }
   }
 
   @Get('by-resume/:resumeDocId')
+  @UseGuards(JwtAuthGuard)
   async getByResume(@Param('resumeDocId') resumeDocId: string) {
     const data = await this.matchingService.getMatchesByResume(resumeDocId)
     return { code: 200, message: 'ok', data }
   }
 
-  // ── SSE: Stream a single match pair ──
+  // ── SSE: Single match pair (no JwtAuthGuard — token verified manually from query) ──
   @Get('stream')
   async streamMatch(
     @Query('resumeId') resumeId: string,
@@ -91,7 +96,7 @@ export class MatchingController {
     }
   }
 
-  // ── SSE: Stream all matches for a document ──
+  // ── SSE: All matches for a document (no JwtAuthGuard — token verified manually from query) ──
   @Get('stream-all')
   async streamAll(
     @Query('docId') docId: string,
@@ -112,8 +117,6 @@ export class MatchingController {
     try {
       const doc = await this.documentService.findById(docId)
       const isResume = doc.docType === 'resume'
-
-      // Find counterpart documents
       const others = await this.docRepo.find({ where: { docType: isResume ? 'job_description' : 'resume', status: 'parsed' } })
 
       send('start', { docId, filename: doc.originalFilename, docType: doc.docType, matchCount: others.length })
