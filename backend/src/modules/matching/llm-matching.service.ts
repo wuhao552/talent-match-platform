@@ -26,29 +26,37 @@ export class LlmMatchingService {
     skillMetaMap: Map<number, Skill>
     person?: User | null
     company?: User | null
-    algorithmScore: number
+    algorithmScore: number  // Kept for context but not used as primary score
     matchDetails: Array<{ skillName: string; score: number; personProficiency: string; jobRequirement: string }>
   }): Promise<{ assessment: LlmAssessment; communityContext: CommunityContext; step: AlgorithmStep }> {
     const t0 = Date.now()
 
     // ── Step 1: Build community context ──
     const communityContext = this.buildCommunityContext(
-      params.resumeSkills,
-      params.jobSkills,
-      params.skillMetaMap,
+      params.resumeSkills, params.jobSkills, params.skillMetaMap,
     )
 
     // ── Step 2: Build mixed context (GraphRAG style) ──
     const context = this.buildMixedContext(params, communityContext)
 
     // ── Step 3: LLM assessment ──
-    const systemPrompt = `你是一位拥有10年经验的资深猎头顾问和技术人才评估专家。请基于以下信息，对候选人与职位的匹配度进行深度评估。
+    const systemPrompt = `你是一位拥有10年经验的资深猎头顾问和技术人才评估专家。你的任务是对候选人与职位进行**全方位深度匹配评估**。
 
-## 评估维度
-1. **技能匹配度**: 核心技能的重合程度和熟练度匹配
-2. **可迁移性**: 候选人的哪些技能可以迁移到目标职位（即使不完全匹配）
-3. **成长潜力**: 基于现有技能栈，候选人达到完全胜任需要多长时间
-4. **互补价值**: 候选人能为团队带来哪些额外的能力
+## 评估维度（请逐一分析）
+
+1. **核心技能匹配**: 直接匹配的技能有哪些？熟练度是否达标？
+2. **可迁移技能**: 候选人有哪些技能可以迁移到目标职位？迁移难度如何？
+3. **成长潜力**: 基于候选人的技能栈和学习轨迹，达到完全胜任需要多长时间？
+4. **经验匹配**: 工作年限、项目经验、行业背景是否匹配？
+5. **地理因素**: 候选人城市与职位城市是否匹配？是否有异地风险？
+6. **互补价值**: 候选人能为团队带来哪些额外的能力或视角？
+
+## 评分标准（请严格遵守）
+- 90-100: 高度匹配，可立即上岗
+- 75-89: 良好匹配，短期适应即可
+- 60-74: 基本匹配，需要一定学习期
+- 40-59: 部分匹配，需要较长学习期
+- 0-39: 匹配度低，不建议
 
 ## 输出要求
 返回严格的JSON格式：
@@ -61,50 +69,35 @@ export class LlmMatchingService {
   ],
   "readinessMonths": 0-12,
   "confidence": 0.0-1.0,
-  "reasoning": "200字以内的综合评估理由"
-}
-
-注意：
-- 不要只看技能名称是否完全匹配，要理解技能之间的关联和可迁移性
-- confidence 反映你对评估结果的确信程度（数据越充分越确信）
-- 只基于提供的数据做判断，不要编造信息`
+  "reasoning": "300字以内的综合评估理由，需要涵盖上述6个维度的分析"
+}`
 
     let rawResponse: string
     try {
       rawResponse = await this.llm.callLLM(systemPrompt, context, undefined)
     } catch (err) {
-      // Fallback: use algorithm score as LLM score
       const fallback: LlmAssessment = {
-        overallFit: params.algorithmScore,
-        strengths: ['算法自动评估'],
-        gaps: [],
+        overallFit: 0,
+        strengths: [],
+        gaps: ['LLM评估不可用'],
         transferableSkills: [],
         readinessMonths: 0,
-        confidence: 0.3,
-        reasoning: `LLM评估失败(${(err as Error).message})，使用算法分数替代`,
+        confidence: 0,
+        reasoning: `LLM评估失败: ${(err as Error).message}`,
       }
       return {
-        assessment: fallback,
-        communityContext,
-        step: {
-          phase: 'llm_assessment',
-          label: 'LLM 深度评估',
-          status: 'error',
-          durationMs: Date.now() - t0,
-          summary: `评估失败: ${(err as Error).message}`,
-        },
+        assessment: fallback, communityContext,
+        step: { phase: 'llm_assessment', label: 'LLM 深度评估', status: 'error', durationMs: Date.now() - t0, summary: `评估失败: ${(err as Error).message}` },
       }
     }
 
     let parsed: Record<string, unknown>
     try {
       parsed = JSON.parse(rawResponse.match(/\{[\s\S]*\}/)?.[0] || '{}')
-    } catch {
-      parsed = {}
-    }
+    } catch { parsed = {} }
 
     const assessment: LlmAssessment = {
-      overallFit: Math.min(100, Math.max(0, Number(parsed.overallFit) || params.algorithmScore)),
+      overallFit: Math.min(100, Math.max(0, Number(parsed.overallFit) || 0)),
       strengths: Array.isArray(parsed.strengths) ? parsed.strengths as string[] : [],
       gaps: Array.isArray(parsed.gaps) ? parsed.gaps as string[] : [],
       transferableSkills: Array.isArray(parsed.transferableSkills)
