@@ -500,10 +500,10 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
   /**
    * 核心 LLM 调用 — 关闭思考模式（非流式）
    */
-  private async callLLM(
+  async callLLM(
     systemPrompt: string,
     userMessage: string,
-    model: string,
+    model?: string,
   ): Promise<string> {
     const apiKey = process.env.LLM_API_KEY
     if (!apiKey) {
@@ -511,6 +511,7 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     }
 
     const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com'
+    const useModel = model || this.proModel
 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 120000)
@@ -524,7 +525,7 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model,
+          model: useModel,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userMessage },
@@ -555,7 +556,7 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
 
       const content = data.choices[0]?.message?.content || ''
       if (!content.trim()) {
-        throw new Error(`LLM 返回空内容 (model=${model}, thinking=disabled)`)
+        throw new Error(`LLM 返回空内容 (model=${useModel}, thinking=disabled)`)
       }
 
       return content

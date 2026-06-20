@@ -6,6 +6,7 @@ import { SkillResolutionService } from '../modules/skill/skill-resolution.servic
 import { SkillService } from '../modules/skill/skill.service'
 import { CommunityDetectionService } from '../modules/graph/community-detection.service'
 import { SkillSimilarityService } from '../modules/skill/skill-similarity.service'
+import { LlmService } from '../modules/llm/llm.service'
 import type { AgentResult } from './agent.interface'
 
 export interface PipelineStep {
@@ -30,6 +31,7 @@ export class OrchestratorAgent {
     private skillService: SkillService,
     private communityDetection: CommunityDetectionService,
     private skillSimilarity: SkillSimilarityService,
+    private llmService: LlmService,
   ) {}
 
   async runParsePipeline(document: {
@@ -121,7 +123,7 @@ export class OrchestratorAgent {
       emit({ agent: 'document_parser', status: 'error', summary: '文档解析异常', error: parseResult.error, timestamp: Date.now() })
     }
 
-    // Process SkillExtractor result
+    // Process SkillExtractor result with Gleaning (GraphRAG-style multi-pass extraction)
     let extractedSkills: Array<{ name: string; proficiency: string }> = []
     let skillLlmDetail = null
 
@@ -132,7 +134,7 @@ export class OrchestratorAgent {
         skillLlmDetail = extractResult.data['llmDetail']
         emit({
           agent: 'skill_extractor', status: 'done',
-          summary: `提取 ${extractedSkills.length} 个技能标签`,
+          summary: `首轮提取 ${extractedSkills.length} 个技能标签`,
           data: {
             skillCount: extractedSkills.length,
             skills: extractedSkills.map((s: any) => ({ name: s.name, proficiency: s.proficiency })),
@@ -144,6 +146,46 @@ export class OrchestratorAgent {
           },
           timestamp: Date.now(),
         })
+
+        // ── Gleaning: second extraction pass to catch missed skills ──
+        if (extractedSkills.length > 0 && parsedText.length > 200) {
+          emit({ agent: 'skill_gleaning', status: 'running', summary: '正在深度挖掘遗漏技能 (Gleaning)...', timestamp: Date.now() })
+
+          try {
+            const existingNames = extractedSkills.map(s => s.name).join('、')
+            const gleaningPrompt = `以下是从同一段文本中已提取的技能：${existingNames}
+
+请仔细检查以下文本，找出被遗漏的技能标签。只输出新发现的技能（不要重复已有的）。
+返回纯JSON数组，格式：[{"name":"技能名","proficiency":"熟练度"}]
+如果没有更多技能，返回空数组 []
+
+文本：
+${parsedText.slice(0, 6000)}`
+
+            const gleaningRawText = await this.llmService.callLLM(
+              '你是一个技能提取专家，擅长发现隐含的技能标签。返回纯JSON数组格式。', gleaningPrompt,
+            ).catch(() => '[]')
+            const gleaningMatch = gleaningRawText.match(/\[[\s\S]*\]/)
+            const gleaningSkills: any[] = gleaningMatch ? JSON.parse(gleaningMatch[0]) : []
+            const gleaningSkills = Array.isArray(gleaningRaw) ? gleaningRaw : []
+            if (gleaningSkills.length > 0) {
+              const newSkills = gleaningSkills.filter((s: any) =>
+                s.name && !extractedSkills.some(e => e.name === s.name)
+              )
+              extractedSkills.push(...newSkills)
+              emit({
+                agent: 'skill_gleaning', status: 'done',
+                summary: `Gleaning 发现 ${newSkills.length} 个额外技能`,
+                data: { newSkills: newSkills.map((s: any) => s.name) },
+                timestamp: Date.now(),
+              })
+            } else {
+              emit({ agent: 'skill_gleaning', status: 'done', summary: 'Gleaning 未发现新技能', timestamp: Date.now() })
+            }
+          } catch (err) {
+            emit({ agent: 'skill_gleaning', status: 'error', summary: 'Gleaning 失败（不影响主流程）', error: (err as Error).message, timestamp: Date.now() })
+          }
+        }
       } else {
         emit({ agent: 'skill_extractor', status: 'error', summary: '技能提取失败', error: extractResult.error, timestamp: Date.now() })
       }

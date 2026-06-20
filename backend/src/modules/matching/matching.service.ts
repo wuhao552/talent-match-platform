@@ -1,13 +1,14 @@
 import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository, In } from 'typeorm'
-import { MatchResult, MatchDetail, ScoreBreakdown } from './match-result.entity'
+import { MatchResult, MatchDetail, ScoreBreakdown, AlgorithmStep, LlmAssessment, CommunityContext } from './match-result.entity'
 import { Document } from '../document/document.entity'
 import { DocumentSkill } from '../skill/document-skill.entity'
 import { Skill } from '../skill/skill.entity'
 import { Neo4jService } from '../graph/neo4j.service'
 import { SkillSimilarityService } from '../skill/skill-similarity.service'
 import { User } from '../user/user.entity'
+import { LlmMatchingService } from './llm-matching.service'
 
 // ── Constants ──
 
@@ -117,6 +118,7 @@ export class MatchingService {
     @InjectRepository(Skill) private skillRepo: Repository<Skill>,
     private neo4j: Neo4jService,
     private skillSimilarity: SkillSimilarityService,
+    private llmMatching: LlmMatchingService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════
@@ -166,6 +168,8 @@ export class MatchingService {
     jobDocId: string,
     preload?: MatchPreload,
   ): Promise<MatchResult> {
+    const trace: AlgorithmStep[] = []
+
     // ── Phase 0: Load all data ──
     let resumeSkills: DocumentSkill[]
     let jobSkills: DocumentSkill[]
@@ -669,12 +673,27 @@ export class MatchingService {
     }
     trendBonus = Math.round(Math.min(TREND_CAP, trendBonus) * 100) / 100
 
-    // ── Phase 10: Combine final score ──
-    // Skill match contributes up to 75, bonuses up to ~38
-    const overallScore = Math.min(100, Math.round(
+    // ── Phase 10: Combine algorithm score ──
+    const algorithmScore = Math.min(100, Math.round(
       (skillMatchScore * 0.75 + cooccurrenceBonus + cityMatchBonus +
        hotnessBonus + experienceBonus + industryMatchBonus + trendBonus) * 100
     ) / 100)
+
+    trace.push({
+      phase: 'skill_matching',
+      label: '技能匹配',
+      status: 'done',
+      durationMs: 0,
+      summary: `${matchDetails.length} 项技能匹配, 算法基础分 ${algorithmScore.toFixed(1)}/100`,
+      data: {
+        skillMatchScore, cooccurrenceBonus, cityMatchBonus,
+        hotnessBonus, experienceBonus, industryMatchBonus, trendBonus,
+        algorithmScore,
+        matchedCount: matchDetails.length,
+        jobSkillCount: jobById.size,
+        resumeSkillCount: resumeById.size,
+      },
+    })
 
     // Diagnostic log
     const hotSample = skillMetaMap.size > 0
@@ -688,13 +707,78 @@ export class MatchingService {
       `[Matching] resume=${resumeDocId.slice(0, 8)} job=${jobDocId.slice(0, 8)} | ` +
       `matched=${matchDetails.length} jobSkills=${jobById.size} resumeSkills=${resumeById.size} | ` +
       `skillScore=${skillMatchScore.toFixed(1)} | ` +
-      `cooc=${cooccurrenceBonus}/10 | ` +
-      `hot=${hotnessBonus}/8 (meta=${skillMetaMap.size} hasHot=${hotSample}) | ` +
-      `exp=${experienceBonus}/5 (resumeYrs=${totalResumeYrs} expectYrs=${expectedYrs}) | ` +
-      `industry=${industryMatchBonus}/4 (occs=${occCount}) | ` +
-      `trend=${trendBonus}/3 (hasTrend=${trendSample}) | ` +
-      `overall=${overallScore}%`,
+      `algorithm=${algorithmScore.toFixed(1)}%`,
     )
+
+    // ── Phase 11: LLM Deep Assessment (GraphRAG-style) ──
+    let llmAssessment: LlmAssessment | null = null
+    let communityContext: CommunityContext | null = null
+    let llmStep: AlgorithmStep | null = null
+
+    try {
+      console.log(`[Matching] Starting LLM assessment for resume=${resumeDocId.slice(0, 8)} job=${jobDocId.slice(0, 8)}`)
+      const llmResult = await this.llmMatching.assessMatch({
+        resumeDoc: resumeDoc!, jobDoc: jobDoc!,
+        resumeSkills, jobSkills, skillMetaMap,
+        person, company,
+        algorithmScore,
+        matchDetails: matchDetails.map(d => ({
+          skillName: d.skillName, score: d.score,
+          personProficiency: d.personProficiency, jobRequirement: d.jobRequirement,
+        })),
+      })
+      llmAssessment = llmResult.assessment
+      communityContext = llmResult.communityContext
+      llmStep = llmResult.step
+      trace.push(llmStep)
+      console.log(`[Matching] LLM assessment complete: score=${llmAssessment.overallFit} confidence=${llmAssessment.confidence}`)
+    } catch (err) {
+      console.error(`[Matching] LLM assessment failed:`, (err as Error).message)
+      trace.push({
+        phase: 'llm_assessment', label: 'LLM 深度评估',
+        status: 'error', durationMs: 0,
+        summary: `评估失败: ${(err as Error).message}`,
+      })
+    }
+
+    // ── Phase 12: Score Fusion ──
+    const tFusionStart = Date.now()
+    let overallScore: number
+    let fusionWeights: { algorithm: number; llm: number }
+
+    if (llmAssessment && llmAssessment.confidence > 0.3) {
+      // Confidence-weighted fusion: higher LLM confidence → more LLM weight
+      const baseAlpha = 0.55  // algorithm base weight
+      const llmWeight = 0.45 * llmAssessment.confidence
+      const alpha = baseAlpha / (baseAlpha + llmWeight)
+      const beta = llmWeight / (baseAlpha + llmWeight)
+
+      const fusedRaw = algorithmScore * alpha + llmAssessment.overallFit * beta
+
+      // Transferable skill bonus: high-transferability skills add up to 5 points
+      const transferBonus = llmAssessment.transferableSkills
+        .filter(t => t.transferability === 'high')
+        .length * 1.5
+
+      overallScore = Math.min(100, Math.round((fusedRaw + transferBonus) * 100) / 100)
+      fusionWeights = { algorithm: Math.round(alpha * 100) / 100, llm: Math.round(beta * 100) / 100 }
+
+      console.log(`[Matching] Fusion: algorithm=${algorithmScore.toFixed(1)} llm=${llmAssessment.overallFit} alpha=${alpha.toFixed(2)} beta=${beta.toFixed(2)} transferBonus=${transferBonus.toFixed(1)} → ${overallScore}`)
+    } else {
+      // LLM unavailable or low confidence → use algorithm score only
+      overallScore = algorithmScore
+      fusionWeights = { algorithm: 1.0, llm: 0.0 }
+      console.log(`[Matching] Using algorithm-only score: ${overallScore}`)
+    }
+
+    trace.push({
+      phase: 'score_fusion',
+      label: '分数融合',
+      status: 'done',
+      durationMs: Date.now() - tFusionStart,
+      summary: `算法 ${algorithmScore.toFixed(1)} + LLM ${(llmAssessment?.overallFit || 'N/A')} → 最终 ${overallScore.toFixed(1)}`,
+      data: { algorithmScore, llmScore: llmAssessment?.overallFit, fusionWeights, finalScore: overallScore },
+    })
 
     const scoreBreakdown: ScoreBreakdown = {
       skillMatchScore: Math.round(skillMatchScore * 100) / 100,
@@ -704,7 +788,10 @@ export class MatchingService {
       experienceBonus,
       industryMatchBonus,
       trendBonus,
+      algorithmScore,
+      llmScore: llmAssessment?.overallFit,
       overallScore,
+      fusionWeights,
       matchStatus: 'computed',
     }
 
@@ -724,6 +811,9 @@ export class MatchingService {
       match.trendBonus = trendBonus
       match.matchDetails = matchDetails
       match.scoreBreakdown = scoreBreakdown
+      match.algorithmTrace = trace
+      match.llmAssessment = llmAssessment
+      match.communityContext = communityContext
       match.staleAt = null as any
       return this.matchRepo.save(match)
     }
@@ -741,6 +831,9 @@ export class MatchingService {
         trendBonus,
         matchDetails,
         scoreBreakdown,
+        algorithmTrace: trace,
+        llmAssessment,
+        communityContext,
       }),
     )
   }

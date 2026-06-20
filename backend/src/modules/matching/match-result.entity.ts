@@ -60,6 +60,15 @@ export class MatchResult {
   @Column({ name: 'match_details', type: 'jsonb', nullable: true })
   matchDetails: MatchDetail[]
 
+  @Column({ name: 'algorithm_trace', type: 'jsonb', nullable: true })
+  algorithmTrace: AlgorithmStep[]
+
+  @Column({ name: 'llm_assessment', type: 'jsonb', nullable: true })
+  llmAssessment: LlmAssessment
+
+  @Column({ name: 'community_context', type: 'jsonb', nullable: true })
+  communityContext: CommunityContext
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date
 }
@@ -77,6 +86,7 @@ export interface MatchDetail {
 }
 
 export interface ScoreBreakdown {
+  // ── Phase 1: Algorithm scores ──
   skillMatchScore: number       // 0-100, weighted skill matching score
   cooccurrenceBonus: number     // 0-10, from knowledge graph co-occurrence
   cityMatchBonus: number        // 0-8, same-city bonus
@@ -84,6 +94,44 @@ export interface ScoreBreakdown {
   experienceBonus: number       // 0-5, years-of-experience surplus bonus
   industryMatchBonus: number    // 0-4, same-industry bonus
   trendBonus: number            // 0-3, skill demand trend adjustment
-  overallScore: number          // 0-100, final combined score
-  matchStatus?: 'computed' | 'fallback'  // 'fallback' when calculation failed
+  algorithmScore: number        // Phase 1 raw score (0-100)
+  // ── Phase 2: LLM assessment ──
+  llmScore?: number             // LLM raw score (0-100)
+  // ── Phase 3: Fusion ──
+  overallScore: number          // Final fused score (0-100)
+  fusionWeights?: { algorithm: number; llm: number }
+  matchStatus?: 'computed' | 'fallback'
+}
+
+/** One step in the matching algorithm execution pipeline */
+export interface AlgorithmStep {
+  phase: string          // e.g. "skill_matching", "community_context", "llm_assessment"
+  label: string          // Human-readable label
+  status: 'done' | 'skipped' | 'error'
+  durationMs: number
+  summary: string        // One-line summary
+  data?: Record<string, unknown>  // Detailed output
+}
+
+/** LLM assessment result stored in match */
+export interface LlmAssessment {
+  overallFit: number           // 0-100
+  strengths: string[]          // Key matching strengths
+  gaps: string[]               // Identified gaps
+  transferableSkills: Array<{
+    candidateSkill: string
+    jobRequirement: string
+    transferability: 'high' | 'medium' | 'low'
+    reasoning: string
+  }>
+  readinessMonths: number      // 0-6
+  confidence: number           // 0.0-1.0
+  reasoning: string            // Full LLM reasoning text
+}
+
+/** Community context used during matching */
+export interface CommunityContext {
+  resumeCommunities: Array<{ title: string; summary: string; skillDomain: string }>
+  jobCommunities: Array<{ title: string; summary: string; skillDomain: string }>
+  domainOverlap: string[]      // Shared domains
 }
