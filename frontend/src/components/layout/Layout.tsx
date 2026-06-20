@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { cn } from '@/lib/utils'
 import {
-  LayoutDashboard, FileText, ClipboardList, LogOut, ChevronLeft,
+  LayoutDashboard, FileText, ClipboardList, LogOut, ChevronLeft, Brain,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 
@@ -13,10 +13,12 @@ const navItems = {
   individual: [
     { to: '/dashboard', label: '工作台', icon: LayoutDashboard },
     { to: '/upload/resume', label: '上传简历', icon: FileText },
+    { to: '/recommend', label: '智能推荐', icon: Brain },
   ],
   enterprise: [
     { to: '/dashboard', label: '工作台', icon: LayoutDashboard },
     { to: '/upload/job', label: '发布职位', icon: ClipboardList },
+    { to: '/recommend', label: '智能推荐', icon: Brain },
   ],
 }
 

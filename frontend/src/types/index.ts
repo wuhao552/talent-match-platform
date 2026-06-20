@@ -63,6 +63,10 @@ export interface MatchResult {
   scoreBreakdown?: ScoreBreakdown | null
   matchDetails: MatchDetail[]
   createdAt: string
+  // GraphRAG-style fields
+  algorithmTrace?: AlgorithmStep[]
+  llmAssessment?: LlmAssessment
+  communityContext?: CommunityContext
   // Enriched fields
   resumeFilename?: string
   candidateName?: string
@@ -88,6 +92,7 @@ export interface MatchDetail {
 }
 
 export interface ScoreBreakdown {
+  // Phase 1: Algorithm
   skillMatchScore: number
   cooccurrenceBonus: number
   cityMatchBonus: number
@@ -95,8 +100,46 @@ export interface ScoreBreakdown {
   experienceBonus: number
   industryMatchBonus: number
   trendBonus: number
+  algorithmScore?: number
+  // Phase 2: LLM
+  llmScore?: number
+  // Phase 3: Fusion
   overallScore: number
+  fusionWeights?: { algorithm: number; llm: number }
   matchStatus?: 'computed' | 'fallback'
+}
+
+// Algorithm execution trace
+export interface AlgorithmStep {
+  phase: string
+  label: string
+  status: 'done' | 'skipped' | 'error'
+  durationMs: number
+  summary: string
+  data?: Record<string, unknown>
+}
+
+// LLM assessment result
+export interface LlmAssessment {
+  overallFit: number
+  strengths: string[]
+  gaps: string[]
+  transferableSkills: Array<{
+    candidateSkill: string
+    jobRequirement: string
+    transferability: 'high' | 'medium' | 'low'
+    reasoning: string
+  }>
+  readinessMonths: number
+  confidence: number
+  reasoning: string
+}
+
+// Community context used during matching
+export interface CommunityContext {
+  resumeCommunities: Array<{ title: string; summary: string; skillDomain: string }>
+  jobCommunities: Array<{ title: string; summary: string; skillDomain: string }>
+  domainOverlap: string[]
 }
 
 // Graph data for D3

@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { scoreColor } from '@/lib/utils'
+import { Brain, Target, Zap, TrendingUp, ArrowRightLeft } from 'lucide-react'
 
 import type { MatchResult } from '@/types'
 
@@ -85,16 +86,26 @@ export function Recommend() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {results.map((result) => (
-            <Card key={result.id}>
+          {results.map((result) => {
+            const hasLlm = result.scoreBreakdown?.llmScore != null
+            const llmAssess = result.llmAssessment
+            return (
+            <Card key={result.id} className={hasLlm ? 'border-primary/20' : ''}>
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <CardTitle className="text-base truncate">
-                      {isIndividual
-                        ? (result.jobTitle || result.jobFilename || '未知职位')
-                        : (result.candidateName || '未知候选人')}
-                    </CardTitle>
+                    <div className="flex items-center gap-1.5">
+                      <CardTitle className="text-base truncate">
+                        {isIndividual
+                          ? (result.jobTitle || result.jobFilename || '未知职位')
+                          : (result.candidateName || '未知候选人')}
+                      </CardTitle>
+                      {hasLlm && (
+                        <Badge variant="outline" className="text-[9px] shrink-0 px-1 py-0 border-purple-300 text-purple-600 dark:text-purple-400">
+                          <Brain className="h-2.5 w-2.5 mr-0.5" />GraphRAG
+                        </Badge>
+                      )}
+                    </div>
                     {isIndividual && result.companyName && (
                       <p className="mt-0.5 text-xs text-muted-foreground">{result.companyName}</p>
                     )}
@@ -105,15 +116,43 @@ export function Recommend() {
                   <ScoreBadge
                     score={result.overallScore}
                     bonusInfo={
-                      (result.cityMatchBonus || 0) > 0
-                        ? `同城+${result.cityMatchBonus}`
-                        : undefined
+                      hasLlm
+                        ? `算法${result.scoreBreakdown!.algorithmScore?.toFixed(0) || '—'} + LLM${result.scoreBreakdown!.llmScore?.toFixed(0) || '—'}`
+                        : (result.cityMatchBonus || 0) > 0
+                          ? `同城+${result.cityMatchBonus}`
+                          : undefined
                     }
                   />
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                {/* Matching skills */}
+                {/* LLM highlights */}
+                {llmAssess && llmAssess.strengths.length > 0 && (
+                  <div className="rounded-md bg-green-50 dark:bg-green-950/20 px-3 py-2">
+                    <div className="flex items-center gap-1 mb-1">
+                      <TrendingUp className="h-3 w-3 text-green-600" />
+                      <span className="text-[10px] font-medium text-green-700 dark:text-green-400">匹配优势</span>
+                    </div>
+                    <p className="text-xs text-green-800 dark:text-green-300 line-clamp-2">
+                      {llmAssess.strengths.slice(0, 2).join('；')}
+                    </p>
+                  </div>
+                )}
+
+                {/* Transferable skills */}
+                {llmAssess && llmAssess.transferableSkills.length > 0 && (
+                  <div className="flex items-center gap-1.5">
+                    <ArrowRightLeft className="h-3 w-3 text-blue-500" />
+                    <span className="text-[10px] text-muted-foreground">
+                      {llmAssess.transferableSkills.filter(t => t.transferability === 'high').length} 项高可迁移技能
+                    </span>
+                    {llmAssess.readinessMonths > 0 && (
+                      <span className="text-[10px] text-muted-foreground">· 上手约 {llmAssess.readinessMonths} 个月</span>
+                    )}
+                  </div>
+                )}
+
+                {/* Matched skills */}
                 {result.matchDetails && result.matchDetails.length > 0 && (
                   <div>
                     <p className="mb-1.5 text-xs text-muted-foreground">
@@ -139,7 +178,7 @@ export function Recommend() {
                 </Button>
               </CardContent>
             </Card>
-          ))}
+          )})}
         </div>
       )}
     </div>
