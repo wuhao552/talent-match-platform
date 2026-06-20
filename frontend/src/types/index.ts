@@ -24,22 +24,13 @@ export interface Document {
   createdAt: string
 }
 
-// Skill
-export interface Skill {
-  id: number
-  name: string
-  category?: string
-  hasStructuralBreak?: boolean
-  isLowFrequency?: boolean
-}
-
 // Document-Skill association
 export interface DocumentSkill {
   id: string
   documentId: string
   skillId: number
   skillName?: string
-  skill?: Skill
+  skill?: { id: number; name: string; category?: string }
   proficiency: 'beginner' | 'intermediate' | 'advanced' | 'expert'
   confidence?: number
   extractionMethod?: string
@@ -116,30 +107,6 @@ export interface CommunityContext {
   resumeCommunities: Array<{ title: string; summary: string; skillDomain: string }>
   jobCommunities: Array<{ title: string; summary: string; skillDomain: string }>
   domainOverlap: string[]
-}
-
-// Graph data for D3
-export interface GraphData {
-  nodes: GraphNode[]
-  edges: GraphEdge[]
-}
-
-export interface GraphNode {
-  id: string | number
-  label: string
-  type: 'skill' | 'person' | 'position' | 'related_skill'
-  proficiency?: string
-  importance?: string
-  hasBreak?: boolean
-  isLowFreq?: boolean
-}
-
-export interface GraphEdge {
-  source: string | number
-  target: string | number
-  label?: string
-  weight?: number
-  type?: string
 }
 
 // API response wrapper

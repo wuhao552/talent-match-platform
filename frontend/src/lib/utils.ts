@@ -38,10 +38,6 @@ export const STATUS_LABEL: Record<string, string> = {
   uploaded: '已上传', parsing: '解析中', parsed: '已解析', failed: '失败',
 }
 
-export const STATUS_VARIANT: Record<string, string> = {
-  uploaded: 'secondary', parsing: 'default', parsed: 'outline', failed: 'destructive',
-}
-
 export const DOC_TYPE_LABEL: Record<string, string> = {
   resume: '简历', job_description: '职位描述',
 }

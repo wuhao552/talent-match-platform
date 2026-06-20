@@ -4,10 +4,8 @@ import type {
   LoginRequest,
   RegisterRequest,
   Document,
-  Skill,
   DocumentSkill,
   MatchResult,
-  GraphData,
 } from '@/types'
 
 const BASE = '/api'
@@ -96,34 +94,12 @@ export const documentApi = {
     request<ApiResponse<DocumentSkill[]>>(`/documents/skills/batch?${ids.map((id) => `ids=${encodeURIComponent(id)}`).join('&')}`),
 }
 
-// Skills
-export const skillApi = {
-  list: (params?: { page?: number; search?: string }) => {
-    const query = new URLSearchParams()
-    if (params?.page) query.set('page', String(params.page))
-    if (params?.search) query.set('search', params.search)
-    return request<ApiResponse<Skill[]>>(`/skills?${query}`)
-  },
-  get: (id: number) => request<ApiResponse<Skill>>(`/skills/${id}`),
-  getRelated: (id: number) =>
-    request<ApiResponse<Skill[]>>(`/skills/${id}/related`),
-}
-
 // Graph
 export const graphApi = {
-  getPersonGraph: (userId: string) =>
-    request<ApiResponse<GraphData>>(`/graph/person/${userId}`),
-  getPositionGraph: (docId: string) =>
-    request<ApiResponse<GraphData>>(`/graph/position/${docId}`),
-  getSkillNetwork: (skillId?: number) =>
-    request<ApiResponse<GraphData>>(
-      `/graph/skill-network${skillId ? `?skillId=${skillId}` : ''}`,
-    ),
   getCooccurrenceBatch: (skillIds: number[]) =>
     request<ApiResponse<Array<{ sourceId: number; targetId: number; freqSkill: number }>>>(`/graph/cooccurrence-batch`, {
       method: 'POST', body: JSON.stringify({ skillIds }),
     }),
-  /** SSE URL for community detection stream (connect with EventSource) */
   communityStreamUrl: () => {
     const token = localStorage.getItem('token') || ''
     return `${BASE}/graph/community-stream?token=${encodeURIComponent(token)}`
@@ -141,7 +117,6 @@ export const matchingApi = {
     request<ApiResponse<MatchResult[]>>('/matching/recommend', {
       method: 'POST',
     }),
-  getResults: () => request<ApiResponse<MatchResult[]>>('/matching/results'),
   getResult: (id: string) =>
     request<ApiResponse<MatchResult>>(`/matching/results/${id}`),
   getByJob: (jobDocId: string) =>

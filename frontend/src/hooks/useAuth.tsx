@@ -4,7 +4,6 @@ import { authApi } from '@/services/api'
 
 interface AuthContextType {
   user: User | null
-  token: string | null
   loading: boolean
   login: (username: string, password: string) => Promise<void>
   register: (data: RegisterRequest) => Promise<void>
@@ -58,7 +57,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider
       value={{
         user,
-        token,
         loading,
         login,
         register,
