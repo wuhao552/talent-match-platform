@@ -8,26 +8,10 @@ import { scoreColor, proficiencyLabel } from '@/lib/utils'
 import { SkillForceGraph } from '@/components/graph/SkillForceGraph'
 import {
   ChevronLeft, MapPin, Building, Clock, AlertTriangle, RefreshCw,
-  CheckCircle2, XCircle, Loader2, Brain, GitBranch, Zap, Target,
+  CheckCircle2, XCircle, Loader2, Brain, GitBranch, Zap,
   TrendingUp, ArrowRightLeft, Network,
 } from 'lucide-react'
 import type { MatchResult, Document, DocumentSkill, AlgorithmStep } from '@/types'
-
-// ── Score bar component ──
-function ScoreBar({ label, value, max, color }: { label: string; value: number; max: number; color?: string }) {
-  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0
-  return (
-    <div className="flex items-center gap-3">
-      <span className="w-24 shrink-0 text-xs text-muted-foreground">{label}</span>
-      <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
-        <div className={`h-full rounded-full transition-all ${color || 'bg-primary'}`} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="w-16 text-right text-xs tabular-nums font-medium">
-        +{value.toFixed(1)}
-      </span>
-    </div>
-  )
-}
 
 // ── Pipeline step icon ──
 function StepIcon({ status }: { status: AlgorithmStep['status'] }) {
@@ -39,10 +23,12 @@ function StepIcon({ status }: { status: AlgorithmStep['status'] }) {
 // ── Phase icon ──
 function PhaseIcon({ phase }: { phase: string }) {
   const icons: Record<string, React.ReactNode> = {
-    skill_matching: <Target className="h-4 w-4" />,
+    skill_matching: <GitBranch className="h-4 w-4" />,
     llm_assessment: <Brain className="h-4 w-4" />,
     score_fusion: <Zap className="h-4 w-4" />,
     community_context: <Network className="h-4 w-4" />,
+    data_loading: <Loader2 className="h-4 w-4" />,
+    result: <CheckCircle2 className="h-4 w-4" />,
   }
   return <>{icons[phase] || <GitBranch className="h-4 w-4" />}</>
 }
@@ -229,7 +215,7 @@ export function MatchingResult() {
               算法执行流水线
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              GraphRAG 三阶段匹配: 技能匹配 → LLM 深度评估 → 置信度融合
+              GraphRAG 工作流: 技能识别 → 社区上下文 → LLM 深度评估
             </p>
           </CardHeader>
           <CardContent>
@@ -275,58 +261,42 @@ export function MatchingResult() {
       )}
 
       {/* ═══════════════════════════════════════════════════════ */}
-      {/* Score Breakdown: Algorithm + LLM + Fusion               */}
+      {/* Score Breakdown: GraphRAG LLM Assessment                */}
       {/* ═══════════════════════════════════════════════════════ */}
       {breakdown && (
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base">匹配分构成</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-5">
-            {/* Phase 1: Algorithm */}
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <Target className="h-3.5 w-3.5 text-blue-500" />
-                <span className="text-xs font-medium text-blue-700 dark:text-blue-400">Phase 1: 算法评分</span>
-                <span className="text-xs text-muted-foreground">→ {breakdown.algorithmScore?.toFixed(1) || '—'}</span>
-              </div>
-              <div className="space-y-2 pl-6">
-                <ScoreBar label="技能匹配" value={breakdown.skillMatchScore * 0.75} max={75} color="bg-blue-500" />
-                <ScoreBar label="知识图谱" value={breakdown.cooccurrenceBonus} max={10} color="bg-blue-400" />
-                <ScoreBar label="同城加分" value={breakdown.cityMatchBonus} max={8} color="bg-blue-300" />
-                <ScoreBar label="热度加分" value={breakdown.hotnessBonus} max={8} color="bg-blue-300" />
-                <ScoreBar label="经验加分" value={breakdown.experienceBonus} max={5} color="bg-blue-300" />
-                <ScoreBar label="行业匹配" value={breakdown.industryMatchBonus} max={4} color="bg-blue-300" />
-                <ScoreBar label="趋势加分" value={breakdown.trendBonus} max={3} color="bg-blue-300" />
-              </div>
-            </div>
-
-            {/* Phase 2: LLM */}
-            {breakdown.llmScore != null && (
+          <CardContent className="space-y-4">
+            {/* GraphRAG LLM Score */}
+            {breakdown.llmScore != null && breakdown.llmScore > 0 && (
               <div>
                 <div className="flex items-center gap-2 mb-3">
-                  <Brain className="h-3.5 w-3.5 text-purple-500" />
-                  <span className="text-xs font-medium text-purple-700 dark:text-purple-400">Phase 2: LLM 深度评估</span>
-                  <span className="text-xs text-muted-foreground">→ {breakdown.llmScore.toFixed(1)}</span>
+                  <Brain className="h-4 w-4 text-purple-500" />
+                  <span className="text-sm font-medium text-purple-700 dark:text-purple-400">GraphRAG LLM 评估</span>
                   {llm?.confidence != null && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
                       置信度 {(llm.confidence * 100).toFixed(0)}%
                     </span>
                   )}
                 </div>
+                <div className="flex items-center justify-between pl-6">
+                  <div className="flex-1 h-3 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full rounded-full bg-gradient-to-r from-purple-500 to-blue-500 transition-all" style={{ width: `${breakdown.llmScore}%` }} />
+                  </div>
+                  <span className={`ml-4 text-2xl font-bold tabular-nums ${scoreColor(breakdown.llmScore)}`}>
+                    {Math.round(breakdown.llmScore)}
+                  </span>
+                </div>
               </div>
             )}
 
-            {/* Phase 3: Fusion */}
+            {/* Final score */}
             <div className="flex items-center justify-between pt-3 border-t">
               <div className="flex items-center gap-2">
                 <Zap className="h-4 w-4 text-amber-500" />
-                <span className="text-sm font-medium">最终融合分数</span>
-                {breakdown.fusionWeights && (
-                  <span className="text-[10px] text-muted-foreground">
-                    (算法 {breakdown.fusionWeights.algorithm.toFixed(0)}% + LLM {breakdown.fusionWeights.llm.toFixed(0)}%)
-                  </span>
-                )}
+                <span className="text-sm font-medium">最终匹配分</span>
               </div>
               <span className={`text-2xl font-bold tabular-nums ${scoreColor(breakdown.overallScore)}`}>
                 {Math.round(breakdown.overallScore)}%

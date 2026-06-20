@@ -117,7 +117,7 @@ export function Recommend() {
                     score={result.overallScore}
                     bonusInfo={
                       hasLlm
-                        ? `算法${result.scoreBreakdown!.algorithmScore?.toFixed(0) || '—'} + LLM${result.scoreBreakdown!.llmScore?.toFixed(0) || '—'}`
+                        ? `GraphRAG ${result.scoreBreakdown!.llmScore?.toFixed(0) || '—'}分`
                         : (result.cityMatchBonus || 0) > 0
                           ? `同城+${result.cityMatchBonus}`
                           : undefined
