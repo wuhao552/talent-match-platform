@@ -87,7 +87,7 @@ export function Recommend() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           {results.map((result) => {
-            const hasLlm = result.scoreBreakdown?.llmScore != null
+            const hasLlm = (result.scoreBreakdown?.llmScore ?? 0) > 0
             const llmAssess = result.llmAssessment
             return (
             <Card key={result.id} className={hasLlm ? 'border-primary/20' : ''}>
@@ -117,10 +117,8 @@ export function Recommend() {
                     score={result.overallScore}
                     bonusInfo={
                       hasLlm
-                        ? `GraphRAG ${result.scoreBreakdown!.llmScore?.toFixed(0) || '—'}分`
-                        : (result.cityMatchBonus || 0) > 0
-                          ? `同城+${result.cityMatchBonus}`
-                          : undefined
+                        ? `GraphRAG ${result.scoreBreakdown!.llmScore.toFixed(0)}分`
+                        : undefined
                     }
                   />
                 </div>

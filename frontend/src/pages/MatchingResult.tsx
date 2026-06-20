@@ -261,7 +261,7 @@ export function MatchingResult() {
       )}
 
       {/* ═══════════════════════════════════════════════════════ */}
-      {/* Score Breakdown: GraphRAG LLM Assessment                */}
+      {/* Score Breakdown: GraphRAG                              */}
       {/* ═══════════════════════════════════════════════════════ */}
       {breakdown && (
         <Card>
@@ -269,8 +269,7 @@ export function MatchingResult() {
             <CardTitle className="text-base">匹配分构成</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {/* GraphRAG LLM Score */}
-            {breakdown.llmScore != null && breakdown.llmScore > 0 && (
+            {breakdown.llmScore > 0 && (
               <div>
                 <div className="flex items-center gap-2 mb-3">
                   <Brain className="h-4 w-4 text-purple-500" />
@@ -291,8 +290,6 @@ export function MatchingResult() {
                 </div>
               </div>
             )}
-
-            {/* Final score */}
             <div className="flex items-center justify-between pt-3 border-t">
               <div className="flex items-center gap-2">
                 <Zap className="h-4 w-4 text-amber-500" />
@@ -469,9 +466,6 @@ export function MatchingResult() {
                       }`}>
                         {d.importance === 'required' ? '必须' : d.importance === 'preferred' ? '加分' : '可选'}
                       </span>
-                    )}
-                    {d.hotnessBoost != null && d.hotnessBoost > 0 && (
-                      <span className="ml-1 text-[10px] text-orange-500">+{d.hotnessBoost}热度</span>
                     )}
                   </div>
                   <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0 ml-3">

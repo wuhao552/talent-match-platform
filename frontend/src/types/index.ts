@@ -53,17 +53,10 @@ export interface MatchResult {
   resumeDocId: string
   jobDocId: string
   overallScore: number
-  skillMatchScore: number
-  cityMatchBonus: number
-  cooccurrenceBonus?: number
-  hotnessBonus?: number
-  experienceBonus?: number
-  industryMatchBonus?: number
-  trendBonus?: number
   scoreBreakdown?: ScoreBreakdown | null
   matchDetails: MatchDetail[]
   createdAt: string
-  // GraphRAG-style fields
+  // GraphRAG fields
   algorithmTrace?: AlgorithmStep[]
   llmAssessment?: LlmAssessment
   communityContext?: CommunityContext
@@ -84,32 +77,17 @@ export interface MatchDetail {
   skillName: string
   personProficiency: string
   jobRequirement: string
-  score: number
   resumeSkillId?: number
   jobSkillId?: number
   importance?: string
-  hotnessBoost?: number
 }
 
 export interface ScoreBreakdown {
-  // Phase 1: Algorithm
-  skillMatchScore: number
-  cooccurrenceBonus: number
-  cityMatchBonus: number
-  hotnessBonus: number
-  experienceBonus: number
-  industryMatchBonus: number
-  trendBonus: number
-  algorithmScore?: number
-  // Phase 2: LLM
-  llmScore?: number
-  // Phase 3: Fusion
+  llmScore: number
   overallScore: number
-  fusionWeights?: { algorithm: number; llm: number }
-  matchStatus?: 'computed' | 'fallback'
+  matchStatus: 'computed' | 'fallback'
 }
 
-// Algorithm execution trace
 export interface AlgorithmStep {
   phase: string
   label: string
@@ -119,7 +97,6 @@ export interface AlgorithmStep {
   data?: Record<string, unknown>
 }
 
-// LLM assessment result
 export interface LlmAssessment {
   overallFit: number
   strengths: string[]
@@ -135,7 +112,6 @@ export interface LlmAssessment {
   reasoning: string
 }
 
-// Community context used during matching
 export interface CommunityContext {
   resumeCommunities: Array<{ title: string; summary: string; skillDomain: string }>
   jobCommunities: Array<{ title: string; summary: string; skillDomain: string }>
@@ -193,4 +169,3 @@ export interface AuthResponse {
   accessToken: string
   user: User
 }
-
