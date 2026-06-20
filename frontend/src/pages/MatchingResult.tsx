@@ -4,7 +4,6 @@ import { matchingApi, documentApi, graphApi } from '@/services/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import { scoreColor, proficiencyLabel } from '@/lib/utils'
 import { SkillForceGraph } from '@/components/graph/SkillForceGraph'
 import {
@@ -12,7 +11,7 @@ import {
   CheckCircle2, XCircle, Loader2, Brain, GitBranch, Zap, Target,
   TrendingUp, ArrowRightLeft, Network,
 } from 'lucide-react'
-import type { MatchResult, Document, DocumentSkill, AlgorithmStep, LlmAssessment } from '@/types'
+import type { MatchResult, Document, DocumentSkill, AlgorithmStep } from '@/types'
 
 // ── Score bar component ──
 function ScoreBar({ label, value, max, color }: { label: string; value: number; max: number; color?: string }) {
@@ -252,16 +251,20 @@ export function MatchingResult() {
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground mt-0.5">{step.summary}</p>
-                      {step.data && step.phase === 'score_fusion' && step.data.fusionWeights && (
-                        <div className="mt-2 flex items-center gap-2">
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
-                            算法权重 {((step.data.fusionWeights as any).algorithm * 100).toFixed(0)}%
-                          </span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
-                            LLM权重 {((step.data.fusionWeights as any).llm * 100).toFixed(0)}%
-                          </span>
-                        </div>
-                      )}
+                      {(() => {
+                        if (!step.data || step.phase !== 'score_fusion' || !step.data.fusionWeights) return null
+                        const fw = step.data.fusionWeights as { algorithm: number; llm: number }
+                        return (
+                          <div className="mt-2 flex items-center gap-2">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                              算法权重 {(fw.algorithm * 100).toFixed(0)}%
+                            </span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+                              LLM权重 {(fw.llm * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                        )
+                      })()}
                     </div>
                   </div>
                 ))}
@@ -434,38 +437,34 @@ export function MatchingResult() {
             </p>
           </CardHeader>
           <CardContent>
-            <Accordion type="multiple" className="w-full">
+            <div className="space-y-3">
               {community.resumeCommunities.length > 0 && (
-                <AccordionItem value="resume-comm">
-                  <AccordionTrigger className="text-sm">候选人技能社区 ({community.resumeCommunities.length})</AccordionTrigger>
-                  <AccordionContent>
-                    <div className="space-y-2">
-                      {community.resumeCommunities.map((c, i) => (
-                        <div key={i} className="rounded-lg bg-muted/50 p-3">
-                          <p className="text-sm font-medium">{c.title}</p>
-                          <p className="text-xs text-muted-foreground mt-1">{c.summary}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
+                <div>
+                  <p className="text-sm font-medium mb-2">候选人技能社区 ({community.resumeCommunities.length})</p>
+                  <div className="space-y-2">
+                    {community.resumeCommunities.map((c, i) => (
+                      <div key={i} className="rounded-lg bg-muted/50 p-3">
+                        <p className="text-sm font-medium">{c.title}</p>
+                        <p className="text-xs text-muted-foreground mt-1">{c.summary}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
               {community.jobCommunities.length > 0 && (
-                <AccordionItem value="job-comm">
-                  <AccordionTrigger className="text-sm">职位技能社区 ({community.jobCommunities.length})</AccordionTrigger>
-                  <AccordionContent>
-                    <div className="space-y-2">
-                      {community.jobCommunities.map((c, i) => (
-                        <div key={i} className="rounded-lg bg-muted/50 p-3">
-                          <p className="text-sm font-medium">{c.title}</p>
-                          <p className="text-xs text-muted-foreground mt-1">{c.summary}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
+                <div>
+                  <p className="text-sm font-medium mb-2">职位技能社区 ({community.jobCommunities.length})</p>
+                  <div className="space-y-2">
+                    {community.jobCommunities.map((c, i) => (
+                      <div key={i} className="rounded-lg bg-muted/50 p-3">
+                        <p className="text-sm font-medium">{c.title}</p>
+                        <p className="text-xs text-muted-foreground mt-1">{c.summary}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
-            </Accordion>
+            </div>
             {community.domainOverlap.length > 0 && (
               <div className="mt-3 flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">领域重叠:</span>

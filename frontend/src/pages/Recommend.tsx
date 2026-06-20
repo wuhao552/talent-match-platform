@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { scoreColor } from '@/lib/utils'
-import { Brain, Target, Zap, TrendingUp, ArrowRightLeft } from 'lucide-react'
+import { Brain, TrendingUp, ArrowRightLeft } from 'lucide-react'
 
 import type { MatchResult } from '@/types'
 
