@@ -123,6 +123,11 @@ export const graphApi = {
     request<ApiResponse<Array<{ sourceId: number; targetId: number; freqSkill: number }>>>(`/graph/cooccurrence-batch`, {
       method: 'POST', body: JSON.stringify({ skillIds }),
     }),
+  /** SSE URL for community detection stream (connect with EventSource) */
+  communityStreamUrl: () => {
+    const token = localStorage.getItem('token') || ''
+    return `${BASE}/graph/community-stream?token=${encodeURIComponent(token)}`
+  },
 }
 
 // Matching

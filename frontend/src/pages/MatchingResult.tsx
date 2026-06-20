@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { scoreColor, proficiencyLabel } from '@/lib/utils'
 import { SkillForceGraph } from '@/components/graph/SkillForceGraph'
-import { ChevronLeft, MapPin, Building, Clock } from 'lucide-react'
+import { ChevronLeft, MapPin, Building, Clock, AlertTriangle, RefreshCw } from 'lucide-react'
 import type { MatchResult, Document, DocumentSkill } from '@/types'
 
 function ScoreBar({ label, value, max }: { label: string; value: number; max: number }) {
@@ -34,6 +34,7 @@ export function MatchingResult() {
   const [coocEdges, setCoocEdges] = useState<Array<{ sourceId: number; targetId: number; freqSkill: number }>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [reparsing, setReparsing] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -50,7 +51,14 @@ export function MatchingResult() {
         setSkills(sk)
         setJobSkills(jsk)
         // Fetch co-occurrence edges for the skill graph
-        const allIds = [...new Set([...sk.map((s: DocumentSkill) => s.skillId), ...jsk.map((s: DocumentSkill) => s.skillId)])]
+        // Include job skill IDs from matchDetails when jobSkills DB records are empty
+        const jskIds = jsk.map((s: DocumentSkill) => s.skillId)
+        if (jskIds.length === 0 && res.data.matchDetails) {
+          for (const d of res.data.matchDetails) {
+            if (d.jobSkillId && d.jobSkillId > 0) jskIds.push(d.jobSkillId)
+          }
+        }
+        const allIds = [...new Set([...sk.map((s: DocumentSkill) => s.skillId), ...jskIds])]
         if (allIds.length >= 2) {
           graphApi.getCooccurrenceBatch(allIds).then((r) => setCoocEdges(r.data)).catch(() => {})
         }
@@ -77,6 +85,49 @@ export function MatchingResult() {
 
   const jobStructured = (jobDoc?.parsedJson as any)?.structured || {}
 
+  // Bug fix: when jobSkills is empty (job document not fully parsed),
+  // reconstruct job skill data from the matchDetails already computed by the backend.
+  // This ensures the graph always has job-side data to display.
+  const effectiveJobSkills: DocumentSkill[] = jobSkills.length > 0 ? jobSkills : (() => {
+    if (!match?.matchDetails) return [] as DocumentSkill[]
+    const seen = new Set<number>()
+    const result: DocumentSkill[] = []
+    for (const d of match.matchDetails) {
+      const jid = d.jobSkillId
+      if (jid == null || jid <= 0 || seen.has(jid)) continue
+      seen.add(jid)
+      result.push({
+        id: `match-${jid}`,
+        documentId: match.jobDocId,
+        skillId: jid,
+        skillName: d.skillName.split(' ↔ ')[1] || d.skillName.split(' ≫ ')[1] || d.skillName,
+        proficiency: (d.jobRequirement as DocumentSkill['proficiency']) || 'intermediate',
+      })
+    }
+    return result
+  })()
+
+  const handleReparse = async (docId: string) => {
+    setReparsing(true)
+    try {
+      await documentApi.parse(docId)
+      // After re-parsing, wait for the parse to complete, then re-compute the match
+      // so the score breakdown updates with the new job skills
+      setTimeout(async () => {
+        try {
+          if (match) {
+            await matchingApi.calculate(match.resumeDocId, match.jobDocId)
+          }
+        } catch {
+          // Matching recalculation failed — page still reloads with re-parsed data
+        }
+        window.location.reload()
+      }, 5000)
+    } catch {
+      setReparsing(false)
+    }
+  }
+
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div className="flex items-center gap-3">
@@ -90,6 +141,35 @@ export function MatchingResult() {
           </p>
         </div>
       </div>
+
+      {effectiveJobSkills.length === 0 && match && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950/30">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div className="flex-1 space-y-2">
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                岗位技能数据缺失
+              </p>
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                该职位文档的技能数据为空，导致匹配分详情中各项加分（知识图谱共现、高热度技能、经验溢出、行业匹配）可能不准确。能力图谱中的岗位数据已从匹配结果中恢复。请点击下方按钮重新解析职位文档，解析完成后建议重新计算匹配。
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={reparsing}
+                onClick={() => handleReparse(match.jobDocId)}
+                className="border-amber-300 text-amber-700 hover:bg-amber-100"
+              >
+                {reparsing ? (
+                  <><RefreshCw className="mr-1.5 h-3 w-3 animate-spin" />正在重新解析并计算匹配...</>
+                ) : (
+                  <><RefreshCw className="mr-1.5 h-3 w-3" />重新解析并计算匹配</>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Card>
         <CardHeader>
@@ -195,20 +275,25 @@ export function MatchingResult() {
           </CardHeader>
           <CardContent>
             <div className="space-y-2.5">
-              <ScoreBar label="技能匹配" value={match.scoreBreakdown.skillMatchScore * 0.6} max={60} />
-              <ScoreBar label="知识图谱共现" value={match.scoreBreakdown.cooccurrenceBonus} max={15} />
-              <ScoreBar label="同城/同区域" value={match.scoreBreakdown.cityMatchBonus} max={10} />
-              <ScoreBar label="高热度技能" value={match.scoreBreakdown.hotnessBonus} max={15} />
+              <ScoreBar label="技能匹配" value={match.scoreBreakdown.skillMatchScore * 0.75} max={75} />
+              <ScoreBar label="知识图谱共现" value={match.scoreBreakdown.cooccurrenceBonus} max={10} />
+              <ScoreBar label="同城/同区域" value={match.scoreBreakdown.cityMatchBonus} max={8} />
+              <ScoreBar label="高热度技能" value={match.scoreBreakdown.hotnessBonus} max={8} />
               <ScoreBar label="经验溢出" value={match.scoreBreakdown.experienceBonus} max={5} />
-              <ScoreBar label="行业匹配" value={match.scoreBreakdown.industryMatchBonus} max={5} />
-              <ScoreBar label="技能趋势" value={match.scoreBreakdown.trendBonus} max={5} />
+              <ScoreBar label="行业匹配" value={match.scoreBreakdown.industryMatchBonus} max={4} />
+              <ScoreBar label="技能趋势" value={match.scoreBreakdown.trendBonus} max={3} />
             </div>
+            {match.scoreBreakdown.matchStatus === 'fallback' && (
+              <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400">
+                匹配计算异常，以上分数为占位值，请重新解析文档后重新计算匹配。
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
 
       {/* Skill graph */}
-      {skills.length > 0 && (
+      {(skills.length > 0 || effectiveJobSkills.length > 0) && (
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base">能力图谱</CardTitle>
@@ -216,7 +301,7 @@ export function MatchingResult() {
           <CardContent>
             <SkillForceGraph
               skills={skills}
-              jobSkills={jobSkills}
+              jobSkills={effectiveJobSkills}
               matchedSkillIds={match.matchDetails?.filter((d) => d.skillId > 0).map((d) => d.skillId)}
               matchedPairs={match.matchDetails?.map((d) => ({ resumeSkillId: d.resumeSkillId, jobSkillId: d.jobSkillId }))}
               coocEdges={coocEdges}

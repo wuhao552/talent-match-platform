@@ -96,6 +96,7 @@ export interface ScoreBreakdown {
   industryMatchBonus: number
   trendBonus: number
   overallScore: number
+  matchStatus?: 'computed' | 'fallback'
 }
 
 // Graph data for D3
