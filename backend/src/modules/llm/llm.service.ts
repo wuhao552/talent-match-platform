@@ -59,7 +59,28 @@ export class LlmService {
     text: string,
     onChunk?: (token: string) => void,
   ): Promise<{ skills: ExtractedSkill[]; detail: LlmCallDetail }> {
-    const systemPrompt = `你是一个技能提取专家。从给定的文本中提取所有技能标签，并评估熟练度。
+    const systemPrompt = `你是一个技能提取专家。从给定的简历文本中提取所有技能标签，并评估熟练度。
+
+## 核心规则：标准化规范化提取
+
+1. **双层提取**：对于每个提到的具体工具/框架，同时提取它所属的**领域技能**。
+   - 例："使用PyTorch搭建ResNet模型" → 提取 "PyTorch"（具体工具）AND "深度学习"（领域）
+   - 例："用React开发前端" → 提取 "React"（框架）AND "前端开发"（领域）
+   - 例："熟练使用Excel进行数据分析" → 提取 "Excel"（工具）AND "数据分析"（领域）
+
+2. **规范化命名**：
+   - 技术工具/框架用英文原名：Python, PyTorch, React, Docker, PostgreSQL
+   - 领域/概念用中文：深度学习, 自然语言处理, 计算机视觉, 前端开发, 数据库设计
+   - 行业技能用中文：门店运营管理, 税务筹划, 护理评估, 投资分析
+   - 避免冗余后缀：不要加"技术"、"开发"、"框架"等通用后缀
+
+3. **抽象层级**：
+   - 如果文本只提到领域（如"深度学习"），提取"深度学习"
+   - 如果文本提到具体工具（如"PyTorch"），同时提取工具名和领域
+   - 不要遗漏隐含技能：如"3年K8s运维经验" → "Kubernetes" + "容器编排" + "DevOps"
+
+4. **行业通用**：适用于IT、医疗、金融、零售、制造、教育等所有行业
+
 返回纯JSON数组，格式：[{"name":"技能名","proficiency":"熟练度"}]
 proficiency必须是以下之一：beginner, intermediate, advanced, expert
 如果没有提取到技能，返回空数组 []`
@@ -261,6 +282,27 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     onChunk?: (token: string) => void,
   ): Promise<{ skills: ExtractedSkill[]; detail: LlmCallDetail }> {
     const systemPrompt = `你是一个招聘需求分析专家。从岗位描述中提取所有要求/期望的技能，并评估该岗位对每项技能的熟练度要求。
+
+## 核心规则：标准化规范化提取
+
+1. **双层提取**：对每个提到的具体要求，同时提取它所属的**领域技能**。
+   - 例："熟悉PyTorch或TensorFlow" → 提取 "PyTorch", "TensorFlow", "深度学习"
+   - 例："有React或Vue开发经验" → 提取 "React", "Vue", "前端开发"
+   - 例："具备税务筹划能力" → 提取 "税务筹划"
+
+2. **规范化命名**（与简历端使用相同规范，确保名称能直接匹配）：
+   - 技术工具/框架用英文原名：Python, PyTorch, React, Docker, PostgreSQL
+   - 领域/概念用中文：深度学习, 自然语言处理, 计算机视觉, 前端开发, 数据库设计
+   - 行业技能用中文：门店运营管理, 税务筹划, 护理评估, 投资分析
+   - 避免冗余后缀：不要加"技术"、"开发"、"框架"等通用后缀
+
+3. **抽象层级**：
+   - 如果JD只要求领域（如"深度学习相关经验"），提取"深度学习"
+   - 如果JD要求具体工具（如"熟练使用PyTorch"），同时提取工具和领域
+   - 从上下文推断隐含技能
+
+4. **行业通用**：适用于IT、医疗、金融、零售、制造、教育等所有行业
+
 返回纯JSON数组，格式：[{"name":"技能名","proficiency":"熟练度"}]
 proficiency必须是以下之一：beginner, intermediate, advanced, expert
 注意：请区分"必备技能"和"加分技能"——必备技能通常对应advanced/expert，加分技能通常对应beginner/intermediate。

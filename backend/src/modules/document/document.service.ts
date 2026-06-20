@@ -10,6 +10,7 @@ import { MatchResult } from '../matching/match-result.entity'
 import { OrchestratorAgent, type ProgressCallback } from '../../agents/orchestrator.agent'
 import { GraphBuilderAgent } from '../../agents/graph-builder.agent'
 import { Neo4jService } from '../graph/neo4j.service'
+import { GraphLayoutService } from '../graph/graph-layout.service'
 import { SkillSeedService } from '../skill/skill-seed.service'
 import type { AgentResult } from '../../agents/agent.interface'
 
@@ -35,6 +36,7 @@ export class DocumentService {
     private orchestrator: OrchestratorAgent,
     private graphBuilder: GraphBuilderAgent,
     private neo4j: Neo4jService,
+    private graphLayout: GraphLayoutService,
     private skillSeedService: SkillSeedService,
   ) {}
 
@@ -138,10 +140,13 @@ export class DocumentService {
     const llmParseDetail = result.data['llmParseDetail']
     const skillLlmDetail = result.data['skillLlmDetail']
     const structuredInfo = result.data['parsedJson'] as Record<string, unknown> | null
+    const matchingLogs = (result.data['matchingLogs'] as any[]) || []
 
     const parsedJson = {
       structured: structuredInfo || null,
+      extractedSkills: (result.data['extractedSkills'] as any[]) || [],
       unmatchedSkills: (result.data['unmatchedSkills'] as any[]) || [],
+      matchingLogs,
       pipeline: (result.data['pipelineSteps'] as any[]) || [],
       llmCalls: {
         documentParse: llmParseDetail ? {
@@ -226,6 +231,7 @@ export class DocumentService {
 
     // Save unmatched skills: batch find by name, batch create, batch save DocumentSkill
     const unmatched = (result.data['unmatchedSkills'] as any[]) || []
+    const unmatchedWithIds: Array<{ skillId: number; proficiency: string; name: string }> = []
     try {
       const validUnmatched = unmatched.filter((u) => u.name?.trim())
       if (validUnmatched.length > 0) {
@@ -260,6 +266,14 @@ export class DocumentService {
           const skill = byLowerName.get(name.toLowerCase())
           if (!skill || savedSkillIds.has(skill.id)) continue
           savedSkillIds.add(skill.id)
+
+          // Track unmatched skills with their IDs for Neo4j graph
+          unmatchedWithIds.push({
+            skillId: skill.id,
+            proficiency: (u.proficiency as any) || 'intermediate',
+            name: skill.name,
+          })
+
           unmatchedDocSkills.push(this.dsRepo.create({
             documentId: doc.id,
             skillId: skill.id,
@@ -277,12 +291,35 @@ export class DocumentService {
       console.error(`[Document] Failed to save unmatched skills for ${doc.id}:`, (err as Error).message)
     }
 
-    // Fire-and-forget: build Neo4j graph for resumes only (Person skill graph)
-    if (mappedSkills.length > 0 && doc.docType === 'resume') {
+    // Fire-and-forget: build Neo4j graph for both resume and job documents
+    // Include both mapped skills and unmatched skills (now with their IDs)
+    const allSkillsForGraph = [...mappedSkills, ...unmatchedWithIds]
+    if (allSkillsForGraph.length > 0) {
       this.graphBuilder.execute({
         sessionId: `graph-${doc.id}`, userId: doc.userId,
-        input: { documentId: doc.id, docType: doc.docType, skills: mappedSkills, userId: doc.userId },
+        input: { documentId: doc.id, docType: doc.docType, skills: allSkillsForGraph, userId: doc.userId },
       }).catch((err) => console.error(`Graph build failed for ${doc.id}:`, err.message))
+    }
+
+    // Fire-and-forget: pre-compute graph layout coordinates
+    if (allSkillsForGraph.length > 0) {
+      const skillIds = allSkillsForGraph.map((s) => s.skillId)
+      this.neo4j.batchGetCooccurrences(skillIds, skillIds)
+        .then(async (coocEdges) => {
+          const layout = this.graphLayout.computeLayout(allSkillsForGraph, coocEdges)
+          // Read current parsedJson and merge in graphLayout
+          const current = await this.docRepo.findOne({ where: { id: doc.id }, select: ['parsedJson'] })
+          if (current) {
+            const updatedJson = { ...(current.parsedJson || {}), graphLayout: layout }
+            await this.docRepo
+              .createQueryBuilder()
+              .update(Document)
+              .set({ parsedJson: updatedJson } as any)
+              .where('id = :id', { id: doc.id })
+              .execute()
+          }
+        })
+        .catch((err) => console.error(`Graph layout computation failed for ${doc.id}:`, err.message))
     }
 
     // Fire-and-forget: invalidate stale match results (don't block parse flow)

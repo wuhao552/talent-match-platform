@@ -6,17 +6,21 @@ import { Document } from '../document/document.entity'
 import { DocumentSkill } from '../skill/document-skill.entity'
 import { Skill } from '../skill/skill.entity'
 import { Neo4jService } from '../graph/neo4j.service'
+import { SkillSimilarityService } from '../skill/skill-similarity.service'
 import { User } from '../user/user.entity'
 
 // ── Constants ──
 
 const PROFICIENCY_LEVELS = ['beginner', 'intermediate', 'advanced', 'expert']
 
-/** Importance weights for job skill requirements */
+/** Importance weights for job skill requirements.
+ *  Previously inferred from proficiency (conflating two concepts).
+ *  Now uniform — all matched skills weighted equally until the LLM prompt
+ *  is updated to extract explicit importance. */
 const IMPORTANCE_WEIGHTS: Record<string, number> = {
   required: 1.0,
-  preferred: 0.6,
-  optional: 0.3,
+  preferred: 1.0,
+  optional: 1.0,
 }
 
 /**
@@ -112,6 +116,7 @@ export class MatchingService {
     @InjectRepository(User) private userRepo: Repository<User>,
     @InjectRepository(Skill) private skillRepo: Repository<Skill>,
     private neo4j: Neo4jService,
+    private skillSimilarity: SkillSimilarityService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════
@@ -149,6 +154,7 @@ export class MatchingService {
             skillMatchScore: 0, cooccurrenceBonus: 0, cityMatchBonus: 0,
             hotnessBonus: 0, experienceBonus: 0, industryMatchBonus: 0,
             trendBonus: 0, overallScore: 0,
+            matchStatus: 'fallback',
           },
         }),
       )
@@ -207,6 +213,14 @@ export class MatchingService {
 
     const jobById = new Map<number, DocumentSkill>()
     for (const ds of jobSkills) jobById.set(ds.skillId, ds)
+
+    // Diagnostic: log skill counts to identify missing data
+    if (jobById.size === 0 && resumeById.size > 0) {
+      console.warn(
+        `[Matching] WARNING: job ${jobDocId.slice(0, 8)} has 0 skills (resume has ${resumeById.size}). ` +
+        `All bonuses will be 0. Re-parse the job document to fix.`,
+      )
+    }
 
     // Load unmatched skills (LLM-extracted but no canonical ID)
     const resumeUnmatched = ((resumeDoc.parsedJson as any)?.unmatchedSkills || []) as Array<{
@@ -302,7 +316,18 @@ export class MatchingService {
       let best: { idx: number; sim: number; score: number; personSkill: NamedSkill } | null = null
       for (let i = 0; i < resumeNamed.length; i++) {
         if (usedResumeNames.has(i)) continue
-        const sim = this.nameSimilarity(jobReq.name, resumeNamed[i].name)
+        // 优先用图相似度 O(1) 查表，替代 Levenshtein
+        let sim = 0
+        if (jobReq.skillId != null && resumeNamed[i].skillId != null) {
+          sim = this.skillSimilarity.getSimilarity(jobReq.skillId!, resumeNamed[i].skillId!)
+          if (sim === 0 && this.skillSimilarity.sameCommunity(jobReq.skillId!, resumeNamed[i].skillId!)) {
+            sim = 0.3
+          }
+        }
+        // 无图数据的技能 → fallback 到字符串匹配
+        if (sim === 0) {
+          sim = this.nameSimilarity(jobReq.name, resumeNamed[i].name)
+        }
         if (sim >= 0.5 && (!best || sim > best.sim)) {
           const profScore = this.calcProficiencyScore(resumeNamed[i].proficiency, jobReq.proficiency)
           best = { idx: i, sim, score: profScore, personSkill: resumeNamed[i] }
@@ -342,10 +367,13 @@ export class MatchingService {
         if (usedResumeNames.has(i)) continue
         const rCat = resumeNamed[i].skillId != null ? skillMetaMap.get(resumeNamed[i].skillId!)?.category : null
         if (rCat && rCat === jobCat) {
+          // Require minimum name similarity to avoid matching unrelated skills in same category
+          const nameSim = this.nameSimilarity(resumeNamed[i].name, jobReq.name)
+          if (nameSim < 0.3) continue
           usedResumeNames.add(i)
           matchedJobNameIndices.add(ji)
           const profScore = this.calcProficiencyScore(resumeNamed[i].proficiency, jobReq.proficiency)
-          const catScore = profScore * weight * 0.55
+          const catScore = profScore * weight * 0.35
 
           matchDetails.push({
             skillId: -900,
@@ -358,25 +386,27 @@ export class MatchingService {
             importance,
           })
 
-          totalProficiencyScore += profScore * weight * 0.55
-          matchedWeight += weight * 0.55
+          totalProficiencyScore += profScore * weight * 0.35
+          matchedWeight += weight * 0.35
           break
         }
       }
     }
 
     // Avg proficiency of matched skills × soft coverage factor
-    // coverageFactor = 0.55 + 0.45 × coverage  (range: 0.55–1.0, sqrt-like floor)
+    // coverageFactor = 0.6 + 0.4 × coverage  (range: 0.6–1.0)
     const avgProficiency = matchedWeight > 0 ? totalProficiencyScore / matchedWeight : 0
     const coverage = totalJobWeight > 0 ? matchedWeight / totalJobWeight : 0
-    const coverageFactor = 0.55 + 0.45 * coverage
+    // coverageFactor: higher floor so partial matches aren't over-penalized
+    // 30% → 0.72, 50% → 0.80, 78% → 0.91, 100% → 1.0
+    const coverageFactor = 0.6 + 0.4 * coverage
     const skillMatchScore = totalJobWeight > 0
       ? Math.round(avgProficiency * coverageFactor * 100) / 100
       : 0
 
     // ── Phase 4: Batch co-occurrence bonus (3 directions in parallel) ──
     let cooccurrenceBonus = 0
-    const COOCCUR_CAP = 15
+    const COOCCUR_CAP = 10
 
     // Build sets of IDs for various directions
     const resumeExtraIds = [...resumeById.keys()].filter((id) => !jobById.has(id))
@@ -400,18 +430,22 @@ export class MatchingService {
     ])
 
     const coocSeen = new Set<string>()
-    for (const e of [...edgesA, ...edgesB, ...edgesC]) {
+    const allEdges = [...edgesA, ...edgesB, ...edgesC]
+    // TF-IDF style: normalize against max frequency in this batch
+    const maxFreq = allEdges.reduce((max, e) => Math.max(max, e.freqSkill), 0)
+    const logMax = maxFreq > 1 ? Math.log(maxFreq) : 1
+    for (const e of allEdges) {
       const key = `${Math.min(e.sourceId, e.targetId)}-${Math.max(e.sourceId, e.targetId)}`
       if (coocSeen.has(key)) continue
       coocSeen.add(key)
       const logFreq = Math.log(Math.max(e.freqSkill, 1))
-      cooccurrenceBonus += Math.min(2, logFreq / Math.log(50) * 2)
+      cooccurrenceBonus += Math.min(2, logFreq / logMax * 1.5)
     }
     cooccurrenceBonus = Math.round(Math.min(COOCCUR_CAP, cooccurrenceBonus) * 100) / 100
 
     // ── Phase 5: Skill hotness bonus ──
     let hotnessBonus = 0
-    const HOTNESS_CAP = 15
+    const HOTNESS_CAP = 8
     for (const [skillId] of jobById) {
       if (resumeById.has(skillId)) {
         const meta = skillMetaMap.get(skillId)
@@ -512,13 +546,13 @@ export class MatchingService {
     if (resumeCity && jobCity) {
       // Check exact city match
       if (resumeCity === jobCity) {
-        cityMatchBonus = 10
+        cityMatchBonus = 8
       } else {
         // Check same region
         const resumeRegion = getRegion(resumeCityRaw)
         const jobRegion = getRegion(jobCityRaw)
         if (resumeRegion && jobRegion && resumeRegion === jobRegion) {
-          cityMatchBonus = 5
+          cityMatchBonus = 4
         }
       }
     }
@@ -530,19 +564,19 @@ export class MatchingService {
         const matchedIntended = intendedCities.some(
           (ic: string) => normalizeCity(ic) === jobCity,
         )
-        if (matchedIntended) cityMatchBonus = 8
+        if (matchedIntended) cityMatchBonus = 6
       }
     }
 
-    // Remote job check
+    // Remote job check — no penalty, no bonus (neutral)
     const jobLocation = (parsedJob.location || parsedJob.city || jobCityRaw).toLowerCase()
     if (jobLocation.includes('远程') || jobLocation.includes('remote')) {
-      cityMatchBonus = 5 // neutral bonus for remote
+      cityMatchBonus = 0
     }
 
     // ── Phase 8: Industry + Category match ──
     let industryMatchBonus = 0
-    const INDUSTRY_CAP = 5
+    const INDUSTRY_CAP = 4
     const occProfiles = this.loadOccupationProfiles()
     if (occProfiles) {
       // Collect skill names from ALL sources
@@ -618,7 +652,7 @@ export class MatchingService {
 
     // ── Phase 9: Trend bonus ──
     let trendBonus = 0
-    const TREND_CAP = 5
+    const TREND_CAP = 3
     // Include ALL matched skills: both ID-matched and fuzzy-matched
     const allMatchedSkillIds = new Set<number>()
     for (const d of matchDetails) {
@@ -636,9 +670,9 @@ export class MatchingService {
     trendBonus = Math.round(Math.min(TREND_CAP, trendBonus) * 100) / 100
 
     // ── Phase 10: Combine final score ──
-    // Skill match contributes up to 60, bonuses up to 40
+    // Skill match contributes up to 75, bonuses up to ~38
     const overallScore = Math.min(100, Math.round(
-      (skillMatchScore * 0.60 + cooccurrenceBonus + cityMatchBonus +
+      (skillMatchScore * 0.75 + cooccurrenceBonus + cityMatchBonus +
        hotnessBonus + experienceBonus + industryMatchBonus + trendBonus) * 100
     ) / 100)
 
@@ -654,11 +688,11 @@ export class MatchingService {
       `[Matching] resume=${resumeDocId.slice(0, 8)} job=${jobDocId.slice(0, 8)} | ` +
       `matched=${matchDetails.length} jobSkills=${jobById.size} resumeSkills=${resumeById.size} | ` +
       `skillScore=${skillMatchScore.toFixed(1)} | ` +
-      `cooc=${cooccurrenceBonus} | ` +
-      `hot=${hotnessBonus} (meta=${skillMetaMap.size} hasHot=${hotSample}) | ` +
-      `exp=${experienceBonus} (resumeYrs=${totalResumeYrs} expectYrs=${expectedYrs}) | ` +
-      `industry=${industryMatchBonus} (occs=${occCount}) | ` +
-      `trend=${trendBonus} (hasTrend=${trendSample}) | ` +
+      `cooc=${cooccurrenceBonus}/10 | ` +
+      `hot=${hotnessBonus}/8 (meta=${skillMetaMap.size} hasHot=${hotSample}) | ` +
+      `exp=${experienceBonus}/5 (resumeYrs=${totalResumeYrs} expectYrs=${expectedYrs}) | ` +
+      `industry=${industryMatchBonus}/4 (occs=${occCount}) | ` +
+      `trend=${trendBonus}/3 (hasTrend=${trendSample}) | ` +
       `overall=${overallScore}%`,
     )
 
@@ -671,6 +705,7 @@ export class MatchingService {
       industryMatchBonus,
       trendBonus,
       overallScore,
+      matchStatus: 'computed',
     }
 
     // Upsert: update existing match for this pair, or create new
@@ -727,12 +762,14 @@ export class MatchingService {
       const jobIds = jobDocs.map((d) => d.id)
 
       // Batch load all existing non-stale match results in one query
-      const existingMatches = await this.matchRepo
-        .createQueryBuilder('mr')
-        .where('mr.resumeDocId IN (:...resumeIds) AND mr.jobDocId IN (:...jobIds)', { resumeIds, jobIds })
-        .andWhere('mr.staleAt IS NULL')
-        .orderBy('mr.createdAt', 'DESC')
-        .getMany()
+      const existingMatches = resumeIds.length > 0 && jobIds.length > 0
+        ? await this.matchRepo
+            .createQueryBuilder('mr')
+            .where('mr.resumeDocId IN (:...resumeIds) AND mr.jobDocId IN (:...jobIds)', { resumeIds, jobIds })
+            .andWhere('mr.staleAt IS NULL')
+            .orderBy('mr.createdAt', 'DESC')
+            .getMany()
+        : []
       const matchCache = new Map<string, MatchResult>()
       for (const m of existingMatches) {
         const key = `${m.resumeDocId}-${m.jobDocId}`
@@ -744,18 +781,50 @@ export class MatchingService {
       const preload = await this.buildPreload(allDocIds, [...myDocs, ...jobDocs])
 
       // Separate cached hits from pairs that need computation
+      // 向量预过滤：每个简历只取 top-K 最相似的职位做详细匹配
+      const TOP_K = 20
+      const getDocSkillIds = (docId: string): number[] =>
+        (preload.skillsByDoc.get(docId) || []).map((s) => s.skillId)
+
+      const resumeVecs = myDocs.map((d) => ({ id: d.id, vec: this.skillSimilarity.docVector(getDocSkillIds(d.id)) }))
+      const jobVecs = jobDocs.map((d) => ({ id: d.id, vec: this.skillSimilarity.docVector(getDocSkillIds(d.id)) }))
+
       const missing: Array<{ resumeId: string; jobId: string }> = []
+
+      // 先处理所有缓存命中的对
       for (const myDoc of myDocs) {
         for (const jobDoc of jobDocs) {
           const key = `${myDoc.id}-${jobDoc.id}`
           if (seen.has(key)) continue
           seen.add(key)
-
           const cached = matchCache.get(key)
-          if (cached) {
-            results.push(cached)
-          } else {
-            missing.push({ resumeId: myDoc.id, jobId: jobDoc.id })
+          if (cached) results.push(cached)
+        }
+      }
+
+      // 对未缓存的对做向量预过滤
+      if (this.skillSimilarity.isLoaded) {
+        for (const rv of resumeVecs) {
+          const sims = this.skillSimilarity.batchCosineSim(rv.vec, jobVecs.map((j) => j.vec))
+          const ranked = sims
+            .map((sim, i) => ({ i, sim }))
+            .sort((a, b) => b.sim - a.sim)
+            .slice(0, TOP_K)
+          for (const { i } of ranked) {
+            const key = `${rv.id}-${jobVecs[i].id}`
+            if (!matchCache.has(key)) {
+              missing.push({ resumeId: rv.id, jobId: jobVecs[i].id })
+            }
+          }
+        }
+      } else {
+        // 无预计算数据 → fallback 到全配对
+        for (const myDoc of myDocs) {
+          for (const jobDoc of jobDocs) {
+            const key = `${myDoc.id}-${jobDoc.id}`
+            if (!matchCache.has(key)) {
+              missing.push({ resumeId: myDoc.id, jobId: jobDoc.id })
+            }
           }
         }
       }
@@ -780,12 +849,14 @@ export class MatchingService {
       const jobIds = myJobs.map((d) => d.id)
 
       // Batch load all existing non-stale match results in one query
-      const existingMatches = await this.matchRepo
-        .createQueryBuilder('mr')
-        .where('mr.resumeDocId IN (:...resumeIds) AND mr.jobDocId IN (:...jobIds)', { resumeIds, jobIds })
-        .andWhere('mr.staleAt IS NULL')
-        .orderBy('mr.createdAt', 'DESC')
-        .getMany()
+      const existingMatches = resumeIds.length > 0 && jobIds.length > 0
+        ? await this.matchRepo
+            .createQueryBuilder('mr')
+            .where('mr.resumeDocId IN (:...resumeIds) AND mr.jobDocId IN (:...jobIds)', { resumeIds, jobIds })
+            .andWhere('mr.staleAt IS NULL')
+            .orderBy('mr.createdAt', 'DESC')
+            .getMany()
+        : []
       const matchCache = new Map<string, MatchResult>()
       for (const m of existingMatches) {
         const key = `${m.resumeDocId}-${m.jobDocId}`
@@ -797,18 +868,49 @@ export class MatchingService {
       const preload = await this.buildPreload(allDocIds, [...resumeDocs, ...myJobs])
 
       // Separate cached hits from pairs that need computation
+      // 向量预过滤：每个职位只取 top-K 最相似的简历做详细匹配
+      const TOP_K = 20
+      const getDocSkillIds = (docId: string): number[] =>
+        (preload.skillsByDoc.get(docId) || []).map((s) => s.skillId)
+
+      const resumeVecs = resumeDocs.map((d) => ({ id: d.id, vec: this.skillSimilarity.docVector(getDocSkillIds(d.id)) }))
+      const jobVecs = myJobs.map((d) => ({ id: d.id, vec: this.skillSimilarity.docVector(getDocSkillIds(d.id)) }))
+
       const missing: Array<{ resumeId: string; jobId: string }> = []
+
+      // 先处理所有缓存命中的对
       for (const myJob of myJobs) {
         for (const resumeDoc of resumeDocs) {
           const key = `${resumeDoc.id}-${myJob.id}`
           if (seen.has(key)) continue
           seen.add(key)
-
           const cached = matchCache.get(key)
-          if (cached) {
-            results.push(cached)
-          } else {
-            missing.push({ resumeId: resumeDoc.id, jobId: myJob.id })
+          if (cached) results.push(cached)
+        }
+      }
+
+      // 对未缓存的对做向量预过滤
+      if (this.skillSimilarity.isLoaded) {
+        for (const jv of jobVecs) {
+          const sims = this.skillSimilarity.batchCosineSim(jv.vec, resumeVecs.map((r) => r.vec))
+          const ranked = sims
+            .map((sim, i) => ({ i, sim }))
+            .sort((a, b) => b.sim - a.sim)
+            .slice(0, TOP_K)
+          for (const { i } of ranked) {
+            const key = `${resumeVecs[i].id}-${jv.id}`
+            if (!matchCache.has(key)) {
+              missing.push({ resumeId: resumeVecs[i].id, jobId: jv.id })
+            }
+          }
+        }
+      } else {
+        for (const myJob of myJobs) {
+          for (const resumeDoc of resumeDocs) {
+            const key = `${resumeDoc.id}-${myJob.id}`
+            if (!matchCache.has(key)) {
+              missing.push({ resumeId: resumeDoc.id, jobId: myJob.id })
+            }
           }
         }
       }
@@ -988,14 +1090,14 @@ export class MatchingService {
   }
 
   private calcProficiencyScore(person?: string, required?: string): number {
-    if (!person || !required) return 75
+    if (!person || !required) return 80
     const pi = PROFICIENCY_LEVELS.indexOf(person)
     const ri = PROFICIENCY_LEVELS.indexOf(required)
-    if (pi === -1 || ri === -1) return 75
+    if (pi === -1 || ri === -1) return 80
     if (pi >= ri) return 100
-    if (pi === ri - 1) return 92
-    if (pi === ri - 2) return 85
-    return 78
+    if (pi === ri - 1) return 85
+    if (pi === ri - 2) return 70
+    return 55
   }
 
   /**

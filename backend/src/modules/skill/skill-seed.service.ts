@@ -25,7 +25,7 @@ interface BreakTrendEntry {
 export class SkillSeedService implements OnModuleInit {
   private readonly entityMapDir = path.resolve(
     process.env.ENTITY_MAP_DIR ||
-      path.join(__dirname, '../../../data/entity_map'),
+      path.join(process.cwd(), 'data/entity_map'),
   )
 
   private readonly categoryPatterns: Array<{ regex: RegExp; category: string }> = [
@@ -162,14 +162,11 @@ export class SkillSeedService implements OnModuleInit {
 
       for (let i = 0; i < lines.length; i += 200) {
         const batch = lines.slice(i, i + 200)
-        const params: Record<string, unknown> = {}
-        const clauses = batch.map((name, j) => {
-          const idx = i + j // 0-indexed
-          params[`id${j}`] = idx
-          params[`name${j}`] = name
-          return `MERGE (s:Skill {id: $id${j}}) SET s.name = $name${j}`
-        })
-        await session.run(clauses.join('\n'), params)
+        const rows = batch.map((name, j) => ({ id: i + j, name }))
+        await session.run(
+          'UNWIND $rows AS row MERGE (s:Skill {id: row.id}) SET s.name = row.name',
+          { rows },
+        )
       }
       console.log('[SkillSeed] Neo4j skill nodes seeded')
     } finally {

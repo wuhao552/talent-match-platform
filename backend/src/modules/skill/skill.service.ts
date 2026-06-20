@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm'
 import { Repository, ILike } from 'typeorm'
 import { Skill } from './skill.entity'
 import { Neo4jService } from '../graph/neo4j.service'
+import { SkillMatcherService } from './skill-matcher.service'
 
 @Injectable()
 export class SkillService {
@@ -10,6 +11,7 @@ export class SkillService {
     @InjectRepository(Skill)
     private skillRepo: Repository<Skill>,
     private neo4j: Neo4jService,
+    private skillMatcher: SkillMatcherService,
   ) {}
 
   async findAll(opts: { page: number; pageSize: number; search?: string }) {
@@ -88,5 +90,56 @@ export class SkillService {
     }
 
     return items.map((i) => existingMap.get(i.skillId)!)
+  }
+
+  /** Create a new skill dynamically (from LLM resolution of unmatched skills) */
+  async createDynamicSkill(name: string, category?: string): Promise<Skill> {
+    const maxIdResult = await this.skillRepo
+      .createQueryBuilder('s')
+      .select('MAX(s.id)', 'max')
+      .getRawOne()
+    const newId = (maxIdResult?.max ?? -1) + 1
+
+    const skill = this.skillRepo.create({
+      id: newId,
+      name,
+      category: category || this.inferCategory(name),
+    })
+    await this.skillRepo.save(skill)
+
+    // Sync to Neo4j
+    await this.neo4j.run(
+      'MERGE (s:Skill {id: $id}) SET s.name = $name',
+      { id: newId, name },
+    )
+
+    // Update in-memory matcher index
+    this.skillMatcher.addSkill(newId, name)
+
+    console.log(`[SkillService] Created dynamic skill: id=${newId} name="${name}" category="${category || 'auto'}"`)
+    return skill
+  }
+
+  private inferCategory(name: string): string | undefined {
+    const patterns: Array<[RegExp, string]> = [
+      [/\b(Python|Java|TypeScript|Go|Rust|C\+\+|PHP|Ruby|Swift|Kotlin)\b/i, '编程语言'],
+      [/\b(React|Vue|Angular|Django|Spring|Flask|Express|NestJS)\b/i, '框架/库'],
+      [/\b(MySQL|PostgreSQL|MongoDB|Redis|Elasticsearch|Neo4j|Kafka)\b/i, '数据/存储'],
+      [/\b(AWS|Azure|GCP|Docker|Kubernetes|Jenkins|Terraform)\b/i, '云/DevOps'],
+      [/\b(机器学习|深度学习|NLP|LLM|RAG|大模型|计算机视觉|推荐系统)\b/i, 'AI/ML'],
+      [/零售|门店|销售|商品|库存|供应链/, '零售'],
+      [/会计|财务|税务|审计|报表|核算/, '会计/财务'],
+      [/医疗|临床|影像|护理|药品|诊断/, '医疗'],
+      [/金融|投资|风控|信贷|基金|证券/, '金融'],
+      [/教育|培训|课程|教学|教研/, '教育'],
+      [/设计|UI|UX|交互|视觉|平面/, '设计'],
+      [/法务|法律|合规|知识产权|合同/, '法务'],
+      [/人力|招聘|薪酬|绩效|培训/, '人力资源'],
+      [/市场|营销|品牌|推广|运营/, '市场/运营'],
+    ]
+    for (const [regex, cat] of patterns) {
+      if (regex.test(name)) return cat
+    }
+    return undefined
   }
 }

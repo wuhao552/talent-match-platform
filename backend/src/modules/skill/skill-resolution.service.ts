@@ -7,8 +7,15 @@ export interface ResolvedSkill {
   name: string
 }
 
+export interface ResolvedResult {
+  /** Matched to existing canonical skill (null if new skill needed) */
+  matched: ResolvedSkill | null
+  /** If no match: canonical name and category for creating a new skill */
+  newSkill?: { canonicalName: string; category: string }
+}
+
 interface CacheEntry {
-  results: Map<string, ResolvedSkill | null>
+  results: Map<string, ResolvedResult>
   timestamp: number
 }
 
@@ -23,26 +30,22 @@ export class SkillResolutionService {
     private llmService: LlmService,
   ) {}
 
-  /**
-   * Resolve a single skill name via batch call (for backward compat).
-   */
-  async resolve(name: string, onChunk?: (token: string) => void): Promise<ResolvedSkill | null> {
+  async resolve(name: string, onChunk?: (token: string) => void): Promise<ResolvedResult> {
     const results = await this.resolveBatch([name], onChunk)
-    return results.get(name) || null
+    return results.get(name) || { matched: null }
   }
 
   /**
    * Batch-resolve extracted skill names to canonical skills via LLM.
-   * All names are sent in a single LLM call for efficiency.
-   * Tokens are streamed via onChunk for real-time display.
+   * When LLM cannot match to an existing skill, it returns canonicalName + category
+   * so the caller can auto-create a new skill.
    */
   async resolveBatch(
     names: string[],
     onChunk?: (token: string) => void,
-  ): Promise<Map<string, ResolvedSkill | null>> {
+  ): Promise<Map<string, ResolvedResult>> {
     if (names.length === 0) return new Map()
 
-    // Normalize and deduplicate
     const unique = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
     if (unique.length === 0) return new Map()
 
@@ -53,7 +56,6 @@ export class SkillResolutionService {
       return cached.results
     }
 
-    // Build the canonical skill list
     const skillList = this.skillMatcher.getAllSkills()
     if (skillList.length === 0) return new Map()
 
@@ -63,17 +65,20 @@ export class SkillResolutionService {
 
     const extractedText = unique.map((n, i) => `${i + 1}. ${n}`).join('\n')
 
-    const systemPrompt = `你是一个技能标签匹配专家。给定一组从文档中提取的技能名称和标准技能列表，将每个提取的技能映射到最匹配的标准技能。
+    const systemPrompt = `你是一个技能标签匹配专家，服务于通用人才匹配系统（覆盖IT、零售、会计、医疗、金融、制造等各行各业）。
+
+给定一组从文档中提取的技能名称和标准技能列表，将每个提取的技能映射到最匹配的标准技能。
 
 规则：
-1. 如果技能描述的是同一个技术能力（即使表述不同），匹配到对应的标准技能。例如"agent工作流设计"→"Agent"，"智能体编排"→"Agent"
-2. 如果技能是某个标准技能的子领域/具体实现，匹配到那个标准技能。例如"YOLO目标检测"→"目标检测"
-3. 对中文和英文的技能名都要正确识别。例如"百度飞桨"→"PaddlePaddle"，"k8s"→"Kubernetes"
-4. 如果提取的技能与所有标准技能都不相关，matchedId和matchedName设为null
-5. 确保每个提取的技能都有对应的一条结果
+1. 先尝试匹配到标准技能列表（同义词、中英文翻译、缩写、上下位概念都算匹配）
+2. 如果成功匹配：设 matchedId 和 matchedName，canonicalName 设为空字符串，category 设为空字符串
+3. 如果确实无法匹配到任何标准技能：设 matchedId 为 null，matchedName 设为 null，但必须提供：
+   - canonicalName: 标准化的技能名（简洁明确，如"门店运营管理"、"税务筹划"、"护理评估"）
+   - category: 行业/领域分类（如"零售"、"会计/财务"、"医疗"、"金融"、"制造"、"教育"、"法务"、"人力资源"、"设计"、"市场/运营"等）
+4. 确保每个提取的技能都有对应的一条结果
 
 返回纯JSON数组（不要markdown包裹）：
-[{"extractedName":"提取的技能名","matchedId":数字或null,"matchedName":"标准技能名或null"}, ...]`
+[{"extractedName":"提取的技能名","matchedId":数字或null,"matchedName":"标准技能名或null","canonicalName":"","category":""}, ...]`
 
     const userMessage = `标准技能列表:
 ${skillListText}
@@ -90,35 +95,36 @@ ${extractedText}
         onChunk,
       )
 
-      const results = new Map<string, ResolvedSkill | null>()
+      const results = new Map<string, ResolvedResult>()
       for (const item of responseArray) {
         const extractedName = item['extractedName'] as string
         const matchedId = item['matchedId'] as number | null
         const matchedName = item['matchedName'] as string | null
+        const canonicalName = (item['canonicalName'] as string) || ''
+        const category = (item['category'] as string) || ''
 
         if (extractedName && matchedId && matchedName && typeof matchedId === 'number') {
-          results.set(extractedName, { id: matchedId, name: matchedName })
+          results.set(extractedName, { matched: { id: matchedId, name: matchedName } })
+        } else if (extractedName && canonicalName) {
+          results.set(extractedName, {
+            matched: null,
+            newSkill: { canonicalName, category: category || '其他' },
+          })
         } else if (extractedName) {
-          results.set(extractedName, null)
+          results.set(extractedName, { matched: null })
         }
       }
 
-      // Ensure all requested names have a result (LLM might miss some)
       for (const name of unique) {
-        if (!results.has(name)) {
-          results.set(name, null)
-        }
+        if (!results.has(name)) results.set(name, { matched: null })
       }
 
-      // Cache the results
       this.cache.set(cacheKey, { results, timestamp: Date.now() })
-
       return results
     } catch (err) {
       console.warn(`[SkillResolution] LLM batch resolution failed: ${(err as Error).message}`)
-      // Return all nulls on failure — skills stay unmatched
-      const results = new Map<string, ResolvedSkill | null>()
-      for (const name of unique) results.set(name, null)
+      const results = new Map<string, ResolvedResult>()
+      for (const name of unique) results.set(name, { matched: null })
       return results
     }
   }

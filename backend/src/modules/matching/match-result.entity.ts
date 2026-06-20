@@ -78,11 +78,12 @@ export interface MatchDetail {
 
 export interface ScoreBreakdown {
   skillMatchScore: number       // 0-100, weighted skill matching score
-  cooccurrenceBonus: number     // 0-15, from knowledge graph co-occurrence
-  cityMatchBonus: number        // 0-10, same-city bonus
-  hotnessBonus: number          // 0-10, high-demand skill bonus
+  cooccurrenceBonus: number     // 0-10, from knowledge graph co-occurrence
+  cityMatchBonus: number        // 0-8, same-city bonus
+  hotnessBonus: number          // 0-8, high-demand skill bonus
   experienceBonus: number       // 0-5, years-of-experience surplus bonus
-  industryMatchBonus: number    // 0-5, same-industry bonus
-  trendBonus: number            // -5 to +5, skill demand trend adjustment
+  industryMatchBonus: number    // 0-4, same-industry bonus
+  trendBonus: number            // 0-3, skill demand trend adjustment
   overallScore: number          // 0-100, final combined score
+  matchStatus?: 'computed' | 'fallback'  // 'fallback' when calculation failed
 }

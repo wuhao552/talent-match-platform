@@ -145,6 +145,7 @@ export class DocumentController {
   async parseStream(
     @Param('id') id: string,
     @Query('token') token: string,
+    @Query('force') force: string,
     @Res() res: Response,
   ) {
     // Verify JWT manually (EventSource doesn't support custom headers)
@@ -184,8 +185,9 @@ export class DocumentController {
       send('start', { documentId: id, filename: doc.originalFilename, userId })
 
       // Skip re-parsing if already parsed (e.g. background parseDocument finished first)
+      // unless force=true is requested (e.g. to re-extract skills)
       let result
-      if (doc.status === 'parsed') {
+      if (doc.status === 'parsed' && force !== 'true') {
         result = { success: true, data: { parsedText: doc.parsedText, parsedJson: doc.parsedJson, extractedSkills: [], mappedSkills: [], unmatchedSkills: [], pipelineSteps: [] }, summary: '已解析' }
       } else {
         result = await this.documentService.parseDocumentStream(id, onProgress, onChunk)

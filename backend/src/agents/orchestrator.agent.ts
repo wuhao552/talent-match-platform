@@ -2,6 +2,10 @@ import { Injectable } from '@nestjs/common'
 import { DocumentParserAgent } from './document-parser.agent'
 import { SkillExtractorAgent } from './skill-extractor.agent'
 import { SkillMatcherService } from '../modules/skill/skill-matcher.service'
+import { SkillResolutionService } from '../modules/skill/skill-resolution.service'
+import { SkillService } from '../modules/skill/skill.service'
+import { CommunityDetectionService } from '../modules/graph/community-detection.service'
+import { SkillSimilarityService } from '../modules/skill/skill-similarity.service'
 import type { AgentResult } from './agent.interface'
 
 export interface PipelineStep {
@@ -22,6 +26,10 @@ export class OrchestratorAgent {
     private docParser: DocumentParserAgent,
     private skillExtractor: SkillExtractorAgent,
     private skillMatcher: SkillMatcherService,
+    private skillResolution: SkillResolutionService,
+    private skillService: SkillService,
+    private communityDetection: CommunityDetectionService,
+    private skillSimilarity: SkillSimilarityService,
   ) {}
 
   async runParsePipeline(document: {
@@ -147,8 +155,12 @@ export class OrchestratorAgent {
     const mappedSkills: { skillId: number; proficiency: string; name: string }[] = []
     const seenSkillIds = new Set<number>()
     const matchedNames = new Set<string>()
+    const matchingLogs: Array<{ extracted: string; canonical: string | null; confidence: number; method: string }> = []
+
     for (const s of extractedSkills) {
-      const match = this.skillMatcher.match(s.name)
+      const { result: match, log } = await this.skillMatcher.match(s.name)
+      matchingLogs.push(log)
+
       if (match) {
         matchedNames.add(s.name)
         if (seenSkillIds.has(match.id)) continue
@@ -156,9 +168,132 @@ export class OrchestratorAgent {
         mappedSkills.push({ skillId: match.id, proficiency: s.proficiency, name: match.name })
       }
     }
+
     const unmatchedSkills = extractedSkills
       .filter((s) => !matchedNames.has(s.name))
       .map((s) => ({ name: s.name, proficiency: s.proficiency }))
+
+    // Step 3: LLM resolution of unmatched skills (supports any industry)
+    if (unmatchedSkills.length > 0) {
+      emit({
+        agent: 'skill_resolver', status: 'running',
+        summary: `正在智能解析 ${unmatchedSkills.length} 个未匹配技能...`,
+        timestamp: Date.now(),
+      })
+
+      try {
+        const resolved = await this.skillResolution.resolveBatch(
+          unmatchedSkills.map((s) => s.name),
+          onChunk ? (t: string) => onChunk('skill_resolver', t) : undefined,
+        )
+
+        const stillUnmatched: typeof unmatchedSkills = []
+        const resolvedDetails: Array<{ extracted: string; canonical: string; method: 'matched' | 'created' | 'failed' }> = []
+
+        for (const us of unmatchedSkills) {
+          const result = resolved.get(us.name)
+          if (result?.matched) {
+            // Matched to existing canonical skill
+            if (!seenSkillIds.has(result.matched.id)) {
+              seenSkillIds.add(result.matched.id)
+              mappedSkills.push({ skillId: result.matched.id, proficiency: us.proficiency, name: result.matched.name })
+            }
+            resolvedDetails.push({ extracted: us.name, canonical: result.matched.name, method: 'matched' })
+          } else if (result?.newSkill) {
+            // LLM couldn't match → auto-create new skill
+            try {
+              const newSkill = await this.skillService.createDynamicSkill(
+                result.newSkill.canonicalName,
+                result.newSkill.category,
+              )
+              seenSkillIds.add(newSkill.id)
+              mappedSkills.push({ skillId: newSkill.id, proficiency: us.proficiency, name: newSkill.name })
+              resolvedDetails.push({ extracted: us.name, canonical: newSkill.name, method: 'created' })
+            } catch (err) {
+              console.error(`[Orchestrator] Failed to create dynamic skill "${result.newSkill.canonicalName}":`, (err as Error).message)
+              stillUnmatched.push(us)
+              resolvedDetails.push({ extracted: us.name, canonical: '', method: 'failed' })
+            }
+          } else {
+            stillUnmatched.push(us)
+            resolvedDetails.push({ extracted: us.name, canonical: '', method: 'failed' })
+          }
+        }
+
+        emit({
+          agent: 'skill_resolver', status: 'done',
+          summary: `LLM 解析完成: ${unmatchedSkills.length - stillUnmatched.length}/${unmatchedSkills.length} 个技能已解析`,
+          data: {
+            totalExtracted: unmatchedSkills.length,
+            matched: unmatchedSkills.length - stillUnmatched.length,
+            details: resolvedDetails,
+          },
+          timestamp: Date.now(),
+        })
+
+        // Update unmatched list
+        unmatchedSkills.length = 0
+        unmatchedSkills.push(...stillUnmatched)
+      } catch (err) {
+        emit({
+          agent: 'skill_resolver', status: 'error',
+          summary: 'LLM 技能解析失败',
+          error: (err as Error).message,
+          timestamp: Date.now(),
+        })
+      }
+    }
+
+    // Step 4: Community detection (Leiden)
+    emit({
+      agent: 'community_detection', status: 'running',
+      summary: '正在运行 Leiden 社区发现...',
+      timestamp: Date.now(),
+    })
+
+    try {
+      const communities = await this.communityDetection.detectWithProgress(
+        (progress) => {
+          emit({
+            agent: 'community_detection', status: 'running',
+            summary: progress.description,
+            timestamp: Date.now(),
+          })
+        },
+      )
+      this.skillSimilarity.updateCommunities(communities)
+      const communityCount = new Set(communities.values()).size
+
+      // Build skillId → name lookup from mappedSkills
+      const skillNameMap = new Map<number, string>()
+      for (const ms of mappedSkills) skillNameMap.set(ms.skillId, ms.name)
+
+      // Group skills by community
+      const groups = new Map<number, string[]>()
+      for (const [skillId, commId] of communities) {
+        const name = skillNameMap.get(skillId)
+        if (!name) continue  // skip skills not in current document
+        if (!groups.has(commId)) groups.set(commId, [])
+        groups.get(commId)!.push(name)
+      }
+      const communityGroups = [...groups.entries()]
+        .sort((a, b) => b[1].length - a[1].length)
+        .map(([, members]) => members)
+
+      emit({
+        agent: 'community_detection', status: 'done',
+        summary: `社区发现完成: ${communityCount} 个社区，${communities.size} 个技能`,
+        data: { communityCount, totalNodes: communities.size, groups: communityGroups },
+        timestamp: Date.now(),
+      })
+    } catch (err) {
+      emit({
+        agent: 'community_detection', status: 'error',
+        summary: '社区发现失败（不影响匹配功能）',
+        error: (err as Error).message,
+        timestamp: Date.now(),
+      })
+    }
 
     return {
       success: parseResult.success || extractedSkills.length > 0,
@@ -170,6 +305,7 @@ export class OrchestratorAgent {
         skillLlmDetail,
         mappedSkills,
         unmatchedSkills,
+        matchingLogs,
         pipelineSteps: collectedSteps,
       },
       summary: [

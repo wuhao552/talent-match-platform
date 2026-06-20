@@ -1,5 +1,13 @@
 import { Injectable, OnModuleInit } from '@nestjs/common'
 import { SkillSeedService } from './skill-seed.service'
+import { LlmService } from '../llm/llm.service'
+
+export interface MatchLog {
+  extracted: string
+  canonical: string | null
+  confidence: number
+  method: 'exact' | 'contains' | 'edit-distance' | 'llm'
+}
 
 interface SkillEntry {
   id: number
@@ -15,53 +23,6 @@ const SKILL_SUFFIXES = [
   '组件', '引擎', '系统', '方案', '流程', '管理', '分析',
   '测试', '部署', '优化', '配置', '实现', '封装',
 ]
-
-// Known synonym/alias map (lowercase normalized)
-const SKILL_ALIASES: Record<string, string> = {
-  'rag': 'rag',
-  '检索增强生成': 'rag',
-  '大模型': 'llm',
-  'llm': 'llm',
-  '大语言模型': 'llm',
-  'langchain': 'langchain',
-  'lc': 'langchain',
-  'pytorch': 'pytorch',
-  'tensorflow': 'tensorflow',
-  'paddlepaddle': 'paddlepaddle',
-  '百度飞桨': 'paddlepaddle',
-  '飞桨': 'paddlepaddle',
-  'keras': 'keras',
-  'scikitlearn': 'scikit-learn',
-  'sklearn': 'scikit-learn',
-  'opencv': 'opencv',
-  'cv': 'opencv',
-  'nlp': 'nlp',
-  '自然语言处理': 'nlp',
-  'cv计算机视觉': 'opencv',
-  '计算机视觉': 'opencv',
-  'k8s': 'kubernetes',
-  'kubernetes': 'kubernetes',
-  'docker': 'docker',
-  '容器': 'docker',
-  'react': 'react',
-  'reactjs': 'react',
-  'vue': 'vue',
-  'vuejs': 'vue',
-  'node': 'node.js',
-  'nodejs': 'node.js',
-  'postgresql': 'postgresql',
-  'postgres': 'postgresql',
-  'pg': 'postgresql',
-  'mongodb': 'mongodb',
-  'mongo': 'mongodb',
-  'redis': 'redis',
-  'elasticsearch': 'elasticsearch',
-  'es': 'elasticsearch',
-  'aws': 'aws',
-  'azure': 'azure',
-  'gcp': 'gcp',
-  'googlecloud': 'gcp',
-}
 
 function normalize(name: string): string {
   return name.toLowerCase().replace(/[-\s\.\/]/g, '')
@@ -80,73 +41,100 @@ function stripSuffixes(s: string): string {
   return result
 }
 
-function resolveAlias(name: string): string {
-  const key = normalize(name)
-  return SKILL_ALIASES[key] || name
-}
-
 @Injectable()
 export class SkillMatcherService implements OnModuleInit {
   private skills: SkillEntry[] = []
+  // 2-gram 倒排索引：ngram → skill index[]
+  private ngramIndex = new Map<string, number[]>()
 
-  constructor(private seedService: SkillSeedService) {}
+  constructor(
+    private seedService: SkillSeedService,
+    private llmService: LlmService,
+  ) {}
 
   async onModuleInit() {
     const names = this.seedService.getSkillList()
-    this.skills = names.map((name, i) => ({
-      id: i, // 0-indexed, aligned with Neo4j
-      name,
-      lower: normalize(name),
-      core: stripSuffixes(normalize(name)),
-    }))
-    console.log(`[SkillMatcher] Indexed ${this.skills.length} skills for matching`)
+    this.skills = names.map((name, i) => {
+      const lower = normalize(name)
+      const core = stripSuffixes(lower)
+      return { id: i, name, lower, core }
+    })
+    this.buildNgramIndex()
+    if (this.skills.length === 0) {
+      console.log(`[SkillMatcher] Starting with empty index (no skill.list). Skills will be added dynamically as documents are parsed.`)
+    } else {
+      console.log(`[SkillMatcher] Indexed ${this.skills.length} skills (${this.ngramIndex.size} ngrams) for matching`)
+    }
+  }
+
+  private buildNgramIndex() {
+    for (let idx = 0; idx < this.skills.length; idx++) {
+      const core = this.skills[idx].core
+      for (let i = 0; i < core.length - 1; i++) {
+        const ng = core.substring(i, i + 2)
+        if (!this.ngramIndex.has(ng)) this.ngramIndex.set(ng, [])
+        this.ngramIndex.get(ng)!.push(idx)
+      }
+    }
+  }
+
+  /** Get top-N candidate indices by n-gram overlap count */
+  private getNgramCandidates(query: string, limit: number): SkillEntry[] {
+    const counts = new Map<number, number>()
+    for (let i = 0; i < query.length - 1; i++) {
+      const ng = query.substring(i, i + 2)
+      const entries = this.ngramIndex.get(ng)
+      if (entries) {
+        for (const idx of entries) {
+          counts.set(idx, (counts.get(idx) || 0) + 1)
+        }
+      }
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([idx]) => this.skills[idx])
   }
 
   /**
    * Find the best matching canonical skill ID for an LLM-extracted name.
    * Returns { id, name, confidence } or null if no good match.
+   * Also returns a log entry describing the matching method used.
    */
-  match(name: string): { id: number; name: string; confidence: number } | null {
-    if (!name || name.trim().length === 0) return null
+  async match(name: string): Promise<{ result: { id: number; name: string; confidence: number } | null; log: MatchLog }> {
+    if (!name || name.trim().length === 0) {
+      return { result: null, log: { extracted: name, canonical: null, confidence: 0, method: 'exact' } }
+    }
+
+    // When index is empty (no skill.list), nothing to match — caller will handle dynamic creation
+    if (this.skills.length === 0) {
+      return { result: null, log: { extracted: name, canonical: null, confidence: 0, method: 'exact' } }
+    }
 
     const q = normalize(name.trim())
     const qCore = stripSuffixes(q)
-    const qAlias = normalize(resolveAlias(name))
 
     // 1. Exact match on raw normalized
     for (const s of this.skills) {
-      if (s.lower === q || s.lower === qCore || s.core === qCore) return { id: s.id, name: s.name, confidence: 1.0 }
-    }
-
-    // 2. Alias match
-    if (qAlias !== q) {
-      for (const s of this.skills) {
-        if (s.lower === qAlias || s.core === qAlias) return { id: s.id, name: s.name, confidence: 0.95 }
+      if (s.lower === q || s.lower === qCore || s.core === qCore) {
+        return { result: { id: s.id, name: s.name, confidence: 1.0 }, log: { extracted: name, canonical: s.name, confidence: 1.0, method: 'exact' } }
       }
     }
 
-    // 3. Contains match (LLM name is substring of canonical, or vice versa)
+    // 2. Contains match (LLM name is substring of canonical, or vice versa)
     for (const s of this.skills) {
       if (s.lower.includes(q) || q.includes(s.lower) ||
           s.lower.includes(qCore) || qCore.includes(s.lower) ||
           s.core.includes(qCore) || qCore.includes(s.core)) {
-        return { id: s.id, name: s.name, confidence: 0.85 }
+        return { result: { id: s.id, name: s.name, confidence: 0.85 }, log: { extracted: name, canonical: s.name, confidence: 0.85, method: 'contains' } }
       }
     }
 
-    // 4. Alias contains match
-    if (qAlias !== q) {
-      for (const s of this.skills) {
-        if (s.lower.includes(qAlias) || qAlias.includes(s.lower)) {
-          return { id: s.id, name: s.name, confidence: 0.82 }
-        }
-      }
-    }
-
-    // 5. Edit distance match — relax thresholds to catch more matches
+    // 3. Edit distance match — use n-gram candidates to avoid scanning all skills
     if (qCore.length >= 2) {
       let best: { id: number; name: string; sim: number } | null = null
-      for (const s of this.skills) {
+      const candidates = this.getNgramCandidates(qCore, 30)
+      for (const s of candidates) {
         const maxLen = Math.max(s.core.length, qCore.length)
         const dist = this.levenshtein(qCore, s.core)
         const sim = 1 - dist / maxLen
@@ -155,10 +143,105 @@ export class SkillMatcherService implements OnModuleInit {
           best = { id: s.id, name: s.name, sim }
         }
       }
-      if (best) return { id: best.id, name: best.name, confidence: Math.max(0.6, best.sim) }
+      if (best) {
+        const confidence = Math.max(0.6, best.sim)
+        return { result: { id: best.id, name: best.name, confidence }, log: { extracted: name, canonical: best.name, confidence, method: 'edit-distance' } }
+      }
     }
 
-    return null
+    // 4. LLM 智能判别 — 对 Top-20 候选技能调用 LLM 判断是否是同一技能
+    const llmCandidates = this.getLLMCandidates(name, 20)
+    for (const candidate of llmCandidates) {
+      const isSame = await this.isSameSkill(name, candidate.name)
+      if (isSame) {
+        return { result: { id: candidate.id, name: candidate.name, confidence: 0.9 }, log: { extracted: name, canonical: candidate.name, confidence: 0.9, method: 'llm' } }
+      }
+    }
+
+    return { result: null, log: { extracted: name, canonical: null, confidence: 0, method: 'llm' } }
+  }
+
+  /**
+   * 判断两个技能名称是否指的是同一个技能
+   */
+  private async isSameSkill(name1: string, name2: string): Promise<boolean> {
+    const prompt = `判断以下两个技能名称是否指的是同一个技能。只返回 JSON 对象 {"isSame": true/false}。
+
+技能A: "${name1}"
+技能B: "${name2}"`
+
+    try {
+      const response = await this.llmService.callLLMForJson(
+        '你是一个技能映射专家。判断两个技能是否相同。',
+        prompt,
+        'deepseek-v4-flash',
+      )
+      return (response as any).isSame === true
+    } catch (err) {
+      console.error(`[SkillMatcher] LLM 判别失败:`, (err as Error).message)
+      return false
+    }
+  }
+
+  /**
+   * 获取 LLM 判别的候选技能列表
+   * 基于 n-gram 重叠度和编辑距离，获取最有可能匹配的候选
+   */
+  private getLLMCandidates(name: string, limit: number): SkillEntry[] {
+    const q = normalize(name)
+    const qCore = stripSuffixes(q)
+    const scored: { entry: SkillEntry; score: number }[] = []
+
+    for (const s of this.skills) {
+      let score = 0
+
+      // 基于 n-gram 重叠度评分
+      const ngramOverlap = this.getNgramOverlap(qCore, s.core)
+      score += ngramOverlap * 10
+
+      // 基于编辑距离评分
+      if (qCore.length >= 2 && s.core.length >= 2) {
+        const maxLen = Math.max(s.core.length, qCore.length)
+        const dist = this.levenshtein(qCore, s.core)
+        const sim = 1 - dist / maxLen
+        if (sim >= 0.5) {
+          score += sim * 5
+        }
+      }
+
+      if (score > 0) {
+        scored.push({ entry: s, score })
+      }
+    }
+
+    return scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((item) => item.entry)
+  }
+
+  /**
+   * 计算两个字符串的 n-gram 重叠度
+   */
+  private getNgramOverlap(s1: string, s2: string): number {
+    if (s1.length < 2 || s2.length < 2) return 0
+
+    const ngrams1 = new Set<string>()
+    const ngrams2 = new Set<string>()
+
+    for (let i = 0; i < s1.length - 1; i++) {
+      ngrams1.add(s1.substring(i, i + 2))
+    }
+    for (let i = 0; i < s2.length - 1; i++) {
+      ngrams2.add(s2.substring(i, i + 2))
+    }
+
+    let overlap = 0
+    for (const ng of ngrams1) {
+      if (ngrams2.has(ng)) overlap++
+    }
+
+    return overlap / Math.max(ngrams1.size, ngrams2.size)
   }
 
   /**
@@ -170,7 +253,6 @@ export class SkillMatcherService implements OnModuleInit {
 
     const q = normalize(name.trim())
     const qCore = stripSuffixes(q)
-    const qAlias = normalize(resolveAlias(name))
 
     const scored: { id: number; name: string; confidence: number }[] = []
 
@@ -180,14 +262,10 @@ export class SkillMatcherService implements OnModuleInit {
       // Exact match variants
       if (s.lower === q || s.lower === qCore || s.core === qCore) {
         confidence = 1.0
-      } else if (qAlias !== q && (s.lower === qAlias || s.core === qAlias)) {
-        confidence = 0.95
       } else if (s.lower.includes(q) || q.includes(s.lower) ||
                  s.lower.includes(qCore) || qCore.includes(s.lower) ||
                  s.core.includes(qCore) || qCore.includes(s.core)) {
         confidence = 0.85
-      } else if (qAlias !== q && (s.lower.includes(qAlias) || qAlias.includes(s.lower))) {
-        confidence = 0.82
       } else if (qCore.length >= 2) {
         // Edit distance
         const maxLen = Math.max(s.core.length, qCore.length)
@@ -206,8 +284,12 @@ export class SkillMatcherService implements OnModuleInit {
     return scored.slice(0, limit)
   }
 
-  matchBatch(names: string[]): { id: number; name: string; confidence: number }[] {
-    return names.map((n) => this.match(n)).filter(Boolean) as { id: number; name: string; confidence: number }[]
+  async matchBatch(names: string[]): Promise<Array<{ result: { id: number; name: string; confidence: number } | null; log: MatchLog }>> {
+    const results: Array<{ result: { id: number; name: string; confidence: number } | null; log: MatchLog }> = []
+    for (const n of names) {
+      results.push(await this.match(n))
+    }
+    return results
   }
 
   getById(id: number): string | undefined {
@@ -218,6 +300,26 @@ export class SkillMatcherService implements OnModuleInit {
   /** Return all canonical skills with id, name, and category for LLM context. */
   getAllSkills(): { id: number; name: string; category?: string }[] {
     return this.skills.map((s) => ({ id: s.id, name: s.name }))
+  }
+
+  /** Dynamically add a new skill to the in-memory index (called when LLM creates a new skill) */
+  addSkill(id: number, name: string): void {
+    const lower = normalize(name)
+    const core = stripSuffixes(lower)
+
+    // Dedup: if a skill with identical normalized name already exists, skip
+    const existing = this.skills.find(s => s.lower === lower || s.core === core)
+    if (existing) return
+
+    const entry: SkillEntry = { id, name, lower, core }
+    const idx = this.skills.length
+    this.skills.push(entry)
+    // Update n-gram index for the new skill
+    for (let i = 0; i < core.length - 1; i++) {
+      const ng = core.substring(i, i + 2)
+      if (!this.ngramIndex.has(ng)) this.ngramIndex.set(ng, [])
+      this.ngramIndex.get(ng)!.push(idx)
+    }
   }
 
   private levenshtein(a: string, b: string): number {
