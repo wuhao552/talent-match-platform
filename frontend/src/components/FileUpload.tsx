@@ -62,7 +62,7 @@ export function FileUpload({ mode, docType, requiredRole, title, description }: 
       if (mode === 'single') {
         const res = await documentApi.upload(files[0], docType)
         toast.success('上传成功，正在解析...')
-        navigate(`/graph/${res.data.id}`)
+        navigate(`/pipeline/${res.data.id}`)
       } else {
         await documentApi.uploadBatch(files, docType)
         toast.success(`成功上传 ${files.length} 个文件，解析中...`)

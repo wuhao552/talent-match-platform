@@ -6,7 +6,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { scoreColor, DOC_TYPE_LABEL, STATUS_LABEL } from '@/lib/utils'
-import { FileText, Briefcase, Upload, ChevronRight, Trash2, Brain, TrendingUp, ArrowRightLeft } from 'lucide-react'
+import { FileText, Briefcase, Upload, ChevronRight, Trash2, Brain, TrendingUp, ArrowRightLeft, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Document, DocumentSkill, MatchResult } from '@/types'
 
@@ -204,8 +204,17 @@ export function Dashboard() {
                         <p className="text-xs text-muted-foreground">暂无匹配</p>
                       )}
                       <ChevronRight className="h-4 w-4 text-muted-foreground/30" />
+                      {!isPending && (
+                        <button
+                          className="rounded p-1.5 text-muted-foreground/40 hover:bg-blue-50 hover:text-blue-500 transition-colors"
+                          onClick={(e) => { e.stopPropagation(); navigate(`/pipeline/${resume.id}`) }}
+                          title="查看处理过程"
+                        >
+                          <Zap className="h-4 w-4" />
+                        </button>
+                      )}
                       <button
-                        className="ml-1 rounded p-1.5 text-muted-foreground/40 hover:bg-red-50 hover:text-red-500 transition-colors"
+                        className="rounded p-1.5 text-muted-foreground/40 hover:bg-red-50 hover:text-red-500 transition-colors"
                         onClick={(e) => { e.stopPropagation(); handleDelete(resume.id, parsed.name || resume.originalFilename) }}
                         title="删除简历"
                       >
@@ -328,6 +337,15 @@ export function Dashboard() {
                       <Badge variant="secondary" className="text-[10px]">
                         {isPending ? '解析中...' : STATUS_LABEL[job.status]}
                       </Badge>
+                      {!isPending && (
+                        <button
+                          className="rounded p-1 text-muted-foreground/40 hover:bg-blue-50 hover:text-blue-500 transition-colors"
+                          onClick={(e) => { e.stopPropagation(); navigate(`/pipeline/${job.id}`) }}
+                          title="查看处理过程"
+                        >
+                          <Zap className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                       <button
                         className="rounded p-1 text-muted-foreground/40 hover:bg-red-50 hover:text-red-500 transition-colors"
                         onClick={(e) => { e.stopPropagation(); handleDelete(job.id, (job.parsedJson as any)?.structured?.title || job.originalFilename) }}

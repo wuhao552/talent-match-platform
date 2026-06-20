@@ -12,6 +12,7 @@ import { MatchingResult } from '@/pages/MatchingResult'
 import { ResumeDetail } from '@/pages/ResumeDetail'
 import { JobDetail } from '@/pages/JobDetail'
 import { Profile } from '@/pages/Profile'
+import { PipelineView } from '@/pages/PipelineView'
 
 function App() {
   return (
@@ -36,6 +37,7 @@ function App() {
                   <Route path="/resume/:resumeDocId" element={<ResumeDetail />} />
                   <Route path="/job/:jobDocId" element={<JobDetail />} />
                   <Route path="/profile" element={<Profile />} />
+                  <Route path="/pipeline/:docId" element={<PipelineView />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Routes>
               </Layout>

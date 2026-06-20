@@ -123,4 +123,20 @@ export const matchingApi = {
     request<ApiResponse<MatchResult[]>>(`/matching/by-job/${jobDocId}`),
   getByResume: (resumeDocId: string) =>
     request<ApiResponse<MatchResult[]>>(`/matching/by-resume/${resumeDocId}`),
+  /** SSE URL for streaming a single match pair */
+  streamUrl: (resumeId: string, jobId: string) => {
+    const token = localStorage.getItem('token') || ''
+    return `${BASE}/matching/stream?resumeId=${encodeURIComponent(resumeId)}&jobId=${encodeURIComponent(jobId)}&token=${encodeURIComponent(token)}`
+  },
+  /** SSE URL for streaming all matches for a document */
+  streamAllUrl: (docId: string) => {
+    const token = localStorage.getItem('token') || ''
+    return `${BASE}/matching/stream-all?docId=${encodeURIComponent(docId)}&token=${encodeURIComponent(token)}`
+  },
+}
+
+/** Build SSE URL for document parse stream */
+export function parseStreamUrl(docId: string): string {
+  const token = localStorage.getItem('token') || ''
+  return `${BASE}/documents/${docId}/parse-stream?token=${encodeURIComponent(token)}`
 }
