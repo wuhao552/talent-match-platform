@@ -81,6 +81,116 @@ export class MatchingService {
     }
   }
 
+  /**
+   * Streaming version — emits progress and LLM tokens via callbacks for SSE.
+   */
+  async calculateMatchStream(
+    resumeDocId: string,
+    jobDocId: string,
+    onProgress: (step: { phase: string; label: string; status: string; summary: string; data?: Record<string, unknown>; durationMs?: number }) => void,
+    onChunk: (agent: string, token: string) => void,
+    onPrompt?: (agent: string, systemPrompt: string, userMessage: string) => void,
+  ): Promise<MatchResult> {
+    const trace: AlgorithmStep[] = []
+
+    // ━━━ Step 1: Load data ━━━
+    const t0 = Date.now()
+    let resumeSkills: DocumentSkill[]
+    let jobSkills: DocumentSkill[]
+    let resumeDoc: Document | null
+    let jobDoc: Document | null
+    let skillMetaMap: Map<number, Skill>
+    let person: User | null = null
+    let company: User | null = null
+
+    onProgress({ phase: 'data_loading', label: '数据加载', status: 'running', summary: '正在加载简历和职位数据...' })
+    ;[resumeSkills, jobSkills, resumeDoc, jobDoc] = await Promise.all([
+      this.dsRepo.find({ where: { documentId: resumeDocId }, relations: ['skill'] }),
+      this.dsRepo.find({ where: { documentId: jobDocId }, relations: ['skill'] }),
+      this.docRepo.findOne({ where: { id: resumeDocId } }),
+      this.docRepo.findOne({ where: { id: jobDocId } }),
+    ])
+    const allSkillIds = new Set<number>()
+    for (const ds of resumeSkills) allSkillIds.add(ds.skillId)
+    for (const ds of jobSkills) allSkillIds.add(ds.skillId)
+    skillMetaMap = new Map<number, Skill>()
+    if (allSkillIds.size > 0) {
+      const skillEntities = await this.skillRepo.findBy([...allSkillIds].map(id => ({ id })))
+      for (const s of skillEntities) skillMetaMap.set(s.id, s)
+    }
+    if (resumeDoc) person = await this.userRepo.findOne({ where: { id: resumeDoc.userId } })
+    if (jobDoc) company = await this.userRepo.findOne({ where: { id: jobDoc.userId } })
+
+    if (!resumeDoc || !jobDoc) throw new Error('Document not found')
+    onProgress({ phase: 'data_loading', label: '数据加载', status: 'done', durationMs: Date.now() - t0, summary: `简历 ${resumeSkills.length} 项技能, 职位 ${jobSkills.length} 项技能` })
+
+    // ━━━ Step 2: Skill matching ━━━
+    const t1 = Date.now()
+    onProgress({ phase: 'skill_matching', label: '技能匹配识别', status: 'running', summary: '正在识别匹配技能...' })
+    const matchDetails: MatchDetail[] = []
+    const resumeById = new Map<number, DocumentSkill>()
+    for (const ds of resumeSkills) resumeById.set(ds.skillId, ds)
+    const jobById = new Map<number, DocumentSkill>()
+    for (const ds of jobSkills) jobById.set(ds.skillId, ds)
+    const usedResumeSkillIds = new Set<number>()
+    const usedJobSkillIds = new Set<number>()
+
+    for (const [skillId, jobSkill] of jobById) {
+      if (resumeById.has(skillId)) {
+        matchDetails.push({ skillId, skillName: jobSkill.skillName || jobSkill.skill?.name || `skill-${skillId}`, personProficiency: resumeById.get(skillId)!.proficiency || 'unknown', jobRequirement: jobSkill.proficiency || 'unknown', resumeSkillId: skillId, jobSkillId: skillId, importance: this.inferImportance(jobSkill.proficiency) })
+        usedResumeSkillIds.add(skillId); usedJobSkillIds.add(skillId)
+      }
+    }
+    const resumeRemaining = resumeSkills.filter(s => !usedResumeSkillIds.has(s.skillId))
+    const jobRemaining = jobSkills.filter(s => !usedJobSkillIds.has(s.skillId))
+    const usedFuzzyResume = new Set<number>()
+    for (const jobSkill of jobRemaining) {
+      let best: { rs: DocumentSkill; sim: number } | null = null
+      for (const rs of resumeRemaining) {
+        if (usedFuzzyResume.has(rs.skillId)) continue
+        let sim = this.skillSimilarity.getSimilarity(jobSkill.skillId, rs.skillId)
+        if (sim === 0 && this.skillSimilarity.sameCommunity(jobSkill.skillId, rs.skillId)) sim = 0.3
+        if (sim === 0) sim = this.nameSimilarity(jobSkill.skillName || '', rs.skillName || '')
+        if (sim >= 0.4 && (!best || sim > best.sim)) best = { rs, sim }
+      }
+      if (best) {
+        usedFuzzyResume.add(best.rs.skillId)
+        matchDetails.push({ skillId: -Math.round(best.sim * 100), skillName: `${best.rs.skillName || best.rs.skill?.name} ↔ ${jobSkill.skillName || jobSkill.skill?.name}`, personProficiency: best.rs.proficiency || 'unknown', jobRequirement: jobSkill.proficiency || 'unknown', resumeSkillId: best.rs.skillId, jobSkillId: jobSkill.skillId, importance: this.inferImportance(jobSkill.proficiency) })
+        usedResumeSkillIds.add(best.rs.skillId); usedJobSkillIds.add(jobSkill.skillId)
+      }
+    }
+
+    onProgress({ phase: 'skill_matching', label: '技能匹配识别', status: 'done', durationMs: Date.now() - t1, summary: `${matchDetails.length} 项技能匹配 (ID: ${matchDetails.filter(d => d.skillId > 0).length}, 模糊: ${matchDetails.filter(d => d.skillId < 0).length})`, data: { matchDetails: matchDetails.map(d => ({ name: d.skillName, prof: d.personProficiency, req: d.jobRequirement })) } })
+
+    // ━━━ Step 3: LLM Deep Assessment (streaming) ━━━
+    let llmAssessment: LlmAssessment | null = null
+    let communityContext: CommunityContext | null = null
+    try {
+      const llmResult = await this.llmMatching.assessMatchStream(
+        { resumeDoc, jobDoc, resumeSkills, jobSkills, skillMetaMap, person, company, matchDetails: matchDetails.map(d => ({ skillName: d.skillName, personProficiency: d.personProficiency, jobRequirement: d.jobRequirement })) },
+        (step) => onProgress({ ...step, durationMs: step.data?.durationMs as number }),
+        onChunk,
+        onPrompt,
+      )
+      llmAssessment = llmResult.assessment
+      communityContext = llmResult.communityContext
+      trace.push(llmResult.step)
+    } catch (err) {
+      onProgress({ phase: 'llm_assessment', label: 'LLM 深度评估', status: 'error', summary: `评估失败: ${(err as Error).message}` })
+    }
+
+    // ━━━ Step 4: Compose result ━━━
+    const overallScore = llmAssessment?.overallFit ?? 0
+    const scoreBreakdown: ScoreBreakdown = { llmScore: llmAssessment?.overallFit ?? 0, overallScore, matchStatus: llmAssessment ? 'computed' : 'fallback' }
+    const entityData = { overallScore, matchDetails, scoreBreakdown, algorithmTrace: trace, llmAssessment, communityContext }
+
+    let match = await this.matchRepo.findOne({ where: { resumeDocId, jobDocId }, order: { createdAt: 'DESC' } })
+    if (match) { Object.assign(match, entityData, { staleAt: null }); match = await this.matchRepo.save(match) }
+    else { match = await this.matchRepo.save(this.matchRepo.create({ resumeDocId, jobDocId, ...entityData })) }
+
+    return match
+  }
+
   private async _graphRAGMatch(
     resumeDocId: string,
     jobDocId: string,

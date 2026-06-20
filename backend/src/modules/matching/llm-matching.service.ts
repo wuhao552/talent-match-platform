@@ -99,6 +99,112 @@ export class LlmMatchingService {
     }
   }
 
+  /**
+   * Streaming version of assessMatch — emits LLM tokens and progress via callbacks.
+   * Used by the SSE pipeline endpoint for real-time visibility.
+   */
+  async assessMatchStream(
+    params: {
+      resumeDoc: Document; jobDoc: Document
+      resumeSkills: DocumentSkill[]; jobSkills: DocumentSkill[]; skillMetaMap: Map<number, Skill>
+      person?: User | null; company?: User | null
+      matchDetails: Array<{ skillName: string; personProficiency: string; jobRequirement: string }>
+    },
+    onProgress: (step: { phase: string; label: string; status: string; summary: string; data?: Record<string, unknown> }) => void,
+    onChunk: (agent: string, token: string) => void,
+    onPrompt?: (agent: string, systemPrompt: string, userMessage: string) => void,
+  ): Promise<{ assessment: LlmAssessment; communityContext: CommunityContext; step: AlgorithmStep }> {
+    const t0 = Date.now()
+
+    onProgress({ phase: 'community_context', label: '构建社区上下文', status: 'running', summary: '正在分析技能社区...' })
+    const communityContext = this.buildCommunityContext(params.resumeSkills, params.jobSkills, params.skillMetaMap)
+    onProgress({ phase: 'community_context', label: '构建社区上下文', status: 'done', summary: `候选 ${communityContext.resumeCommunities.length} 个社区, 职位 ${communityContext.jobCommunities.length} 个社区` })
+
+    onProgress({ phase: 'context_assembly', label: '组装混合上下文', status: 'running', summary: '正在组装 GraphRAG 风格上下文...' })
+    const context = this.buildMixedContext(params, communityContext)
+    onProgress({ phase: 'context_assembly', label: '组装混合上下文', status: 'done', summary: `上下文长度: ${context.length} 字符` })
+
+    const systemPrompt = `你是一位拥有10年经验的资深猎头顾问和技术人才评估专家。你的任务是对候选人与职位进行**全方位深度匹配评估**。
+
+## 评估维度（请逐一分析）
+
+1. **核心技能匹配**: 直接匹配的技能有哪些？熟练度是否达标？
+2. **可迁移技能**: 候选人有哪些技能可以迁移到目标职位？迁移难度如何？
+3. **成长潜力**: 基于候选人的技能栈和学习轨迹，达到完全胜任需要多长时间？
+4. **经验匹配**: 工作年限、项目经验、行业背景是否匹配？
+5. **地理因素**: 候选人城市与职位城市是否匹配？是否有异地风险？
+6. **互补价值**: 候选人能为团队带来哪些额外的能力或视角？
+
+## 评分标准（请严格遵守）
+- 90-100: 高度匹配，可立即上岗
+- 75-89: 良好匹配，短期适应即可
+- 60-74: 基本匹配，需要一定学习期
+- 40-59: 部分匹配，需要较长学习期
+- 0-39: 匹配度低，不建议
+
+## 输出要求
+返回严格的JSON格式：
+{
+  "overallFit": 0-100的综合匹配分,
+  "strengths": ["匹配优势1", "匹配优势2", "匹配优势3"],
+  "gaps": ["差距1", "差距2"],
+  "transferableSkills": [
+    {"candidateSkill": "候选人技能", "jobRequirement": "对应职位要求", "transferability": "high/medium/low", "reasoning": "原因"}
+  ],
+  "readinessMonths": 0-12,
+  "confidence": 0.0-1.0,
+  "reasoning": "300字以内的综合评估理由，需要涵盖上述6个维度的分析"
+}`
+
+    // Emit prompt so frontend can display it
+    if (onPrompt) onPrompt('llm_assessment', systemPrompt, context)
+
+    onProgress({ phase: 'llm_assessment', label: 'LLM 深度评估', status: 'running', summary: '正在调用大模型进行匹配评估...' })
+
+    let rawResponse: string
+    try {
+      rawResponse = ''
+      for await (const chunk of this.llm.callLLMStream(systemPrompt, context, process.env.LLM_MODEL || 'deepseek-v4-pro')) {
+        if (!chunk.done) onChunk('llm_assessment', chunk.token)
+        rawResponse = chunk.fullText
+      }
+    } catch (err) {
+      const fallback: LlmAssessment = { overallFit: 0, strengths: [], gaps: ['LLM评估不可用'], transferableSkills: [], readinessMonths: 0, confidence: 0, reasoning: `LLM评估失败: ${(err as Error).message}` }
+      return { assessment: fallback, communityContext, step: { phase: 'llm_assessment', label: 'LLM 深度评估', status: 'error', durationMs: Date.now() - t0, summary: `评估失败: ${(err as Error).message}` } }
+    }
+
+    let parsed: Record<string, unknown>
+    try { parsed = JSON.parse(rawResponse.match(/\{[\s\S]*\}/)?.[0] || '{}') } catch { parsed = {} }
+
+    const assessment: LlmAssessment = {
+      overallFit: Math.min(100, Math.max(0, Number(parsed.overallFit) || 0)),
+      strengths: Array.isArray(parsed.strengths) ? parsed.strengths as string[] : [],
+      gaps: Array.isArray(parsed.gaps) ? parsed.gaps as string[] : [],
+      transferableSkills: Array.isArray(parsed.transferableSkills)
+        ? (parsed.transferableSkills as any[]).map(t => ({
+            candidateSkill: String(t.candidateSkill || ''),
+            jobRequirement: String(t.jobRequirement || ''),
+            transferability: (['high', 'medium', 'low'].includes(t.transferability) ? t.transferability : 'low') as 'high' | 'medium' | 'low',
+            reasoning: String(t.reasoning || ''),
+          }))
+        : [],
+      readinessMonths: Math.min(12, Math.max(0, Number(parsed.readinessMonths) || 0)),
+      confidence: Math.min(1, Math.max(0, Number(parsed.confidence) || 0.5)),
+      reasoning: String(parsed.reasoning || ''),
+    }
+
+    onProgress({ phase: 'llm_assessment', label: 'LLM 深度评估', status: 'done', summary: `匹配度 ${assessment.overallFit}/100, 置信度 ${(assessment.confidence * 100).toFixed(0)}%` })
+
+    return {
+      assessment, communityContext,
+      step: {
+        phase: 'llm_assessment', label: 'LLM 深度评估', status: 'done', durationMs: Date.now() - t0,
+        summary: `匹配度 ${assessment.overallFit}/100, 置信度 ${(assessment.confidence * 100).toFixed(0)}%, ${assessment.strengths.length} 项优势, ${assessment.gaps.length} 项差距`,
+        data: { overallFit: assessment.overallFit, confidence: assessment.confidence, reasoning: assessment.reasoning },
+      },
+    }
+  }
+
   private buildCommunityContext(
     resumeSkills: DocumentSkill[], jobSkills: DocumentSkill[], skillMetaMap: Map<number, Skill>,
   ): CommunityContext {
