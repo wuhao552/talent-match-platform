@@ -167,7 +167,6 @@ ${parsedText.slice(0, 6000)}`
             ).catch(() => '[]')
             const gleaningMatch = gleaningRawText.match(/\[[\s\S]*\]/)
             const gleaningSkills: any[] = gleaningMatch ? JSON.parse(gleaningMatch[0]) : []
-            const gleaningSkills = Array.isArray(gleaningRaw) ? gleaningRaw : []
             if (gleaningSkills.length > 0) {
               const newSkills = gleaningSkills.filter((s: any) =>
                 s.name && !extractedSkills.some(e => e.name === s.name)

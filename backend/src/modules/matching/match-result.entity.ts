@@ -61,13 +61,13 @@ export class MatchResult {
   matchDetails: MatchDetail[]
 
   @Column({ name: 'algorithm_trace', type: 'jsonb', nullable: true })
-  algorithmTrace: AlgorithmStep[]
+  algorithmTrace: AlgorithmStep[] | null
 
   @Column({ name: 'llm_assessment', type: 'jsonb', nullable: true })
-  llmAssessment: LlmAssessment
+  llmAssessment: LlmAssessment | null
 
   @Column({ name: 'community_context', type: 'jsonb', nullable: true })
-  communityContext: CommunityContext
+  communityContext: CommunityContext | null
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date
