@@ -30,27 +30,6 @@ export class MatchResult {
   @Column({ name: 'overall_score', type: 'decimal', precision: 5, scale: 2 })
   overallScore: number
 
-  @Column({ name: 'skill_match_score', type: 'decimal', precision: 5, scale: 2 })
-  skillMatchScore: number
-
-  @Column({ name: 'city_match_bonus', type: 'decimal', precision: 5, scale: 2, default: 0 })
-  cityMatchBonus: number
-
-  @Column({ name: 'cooccurrence_bonus', type: 'decimal', precision: 5, scale: 2, default: 0 })
-  cooccurrenceBonus: number
-
-  @Column({ name: 'hotness_bonus', type: 'decimal', precision: 5, scale: 2, default: 0 })
-  hotnessBonus: number
-
-  @Column({ name: 'experience_bonus', type: 'decimal', precision: 5, scale: 2, default: 0 })
-  experienceBonus: number
-
-  @Column({ name: 'industry_match_bonus', type: 'decimal', precision: 5, scale: 2, default: 0 })
-  industryMatchBonus: number
-
-  @Column({ name: 'trend_bonus', type: 'decimal', precision: 5, scale: 2, default: 0 })
-  trendBonus: number
-
   @Column({ name: 'score_breakdown', type: 'jsonb', nullable: true })
   scoreBreakdown: ScoreBreakdown
 
@@ -74,64 +53,50 @@ export class MatchResult {
 }
 
 export interface MatchDetail {
-  skillId: number           // canonical match ID (positive for ID match, negative for fuzzy)
+  skillId: number           // positive = ID match, negative = fuzzy match (|sim*100|)
   skillName: string
   personProficiency: string
   jobRequirement: string
-  score: number
-  resumeSkillId?: number    // actual resume-side skill ID (for graph edges)
-  jobSkillId?: number       // actual job-side skill ID (for graph edges)
-  importance?: string       // job skill importance: required/preferred/optional
-  hotnessBoost?: number     // additional score from skill hotness weighting
+  resumeSkillId?: number
+  jobSkillId?: number
+  importance?: string       // required / preferred / optional
 }
 
 export interface ScoreBreakdown {
-  // ── Phase 1: Algorithm scores ──
-  skillMatchScore: number       // 0-100, weighted skill matching score
-  cooccurrenceBonus: number     // 0-10, from knowledge graph co-occurrence
-  cityMatchBonus: number        // 0-8, same-city bonus
-  hotnessBonus: number          // 0-8, high-demand skill bonus
-  experienceBonus: number       // 0-5, years-of-experience surplus bonus
-  industryMatchBonus: number    // 0-4, same-industry bonus
-  trendBonus: number            // 0-3, skill demand trend adjustment
-  algorithmScore: number        // Phase 1 raw score (0-100)
-  // ── Phase 2: LLM assessment ──
-  llmScore?: number             // LLM raw score (0-100)
-  // ── Phase 3: Fusion ──
-  overallScore: number          // Final fused score (0-100)
-  fusionWeights?: { algorithm: number; llm: number }
-  matchStatus?: 'computed' | 'fallback'
+  llmScore: number              // LLM raw score (0-100)
+  overallScore: number          // final score (= llmScore in GraphRAG mode)
+  matchStatus: 'computed' | 'fallback'
 }
 
 /** One step in the matching algorithm execution pipeline */
 export interface AlgorithmStep {
-  phase: string          // e.g. "skill_matching", "community_context", "llm_assessment"
-  label: string          // Human-readable label
+  phase: string
+  label: string
   status: 'done' | 'skipped' | 'error'
   durationMs: number
-  summary: string        // One-line summary
-  data?: Record<string, unknown>  // Detailed output
+  summary: string
+  data?: Record<string, unknown>
 }
 
-/** LLM assessment result stored in match */
+/** LLM assessment result */
 export interface LlmAssessment {
   overallFit: number           // 0-100
-  strengths: string[]          // Key matching strengths
-  gaps: string[]               // Identified gaps
+  strengths: string[]
+  gaps: string[]
   transferableSkills: Array<{
     candidateSkill: string
     jobRequirement: string
     transferability: 'high' | 'medium' | 'low'
     reasoning: string
   }>
-  readinessMonths: number      // 0-6
+  readinessMonths: number      // 0-12
   confidence: number           // 0.0-1.0
-  reasoning: string            // Full LLM reasoning text
+  reasoning: string
 }
 
 /** Community context used during matching */
 export interface CommunityContext {
   resumeCommunities: Array<{ title: string; summary: string; skillDomain: string }>
   jobCommunities: Array<{ title: string; summary: string; skillDomain: string }>
-  domainOverlap: string[]      // Shared domains
+  domainOverlap: string[]
 }
