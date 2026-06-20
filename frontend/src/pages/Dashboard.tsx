@@ -6,7 +6,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { scoreColor, DOC_TYPE_LABEL, STATUS_LABEL } from '@/lib/utils'
-import { FileText, Briefcase, Upload, ChevronRight, Trash2 } from 'lucide-react'
+import { FileText, Briefcase, Upload, ChevronRight, Trash2, Brain, TrendingUp, ArrowRightLeft } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Document, DocumentSkill, MatchResult } from '@/types'
 
@@ -218,6 +218,59 @@ export function Dashboard() {
             })}
           </div>
         )}
+
+        {/* GraphRAG 推荐摘要 */}
+        {matches.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Brain className="h-4 w-4 text-purple-500" />
+              <h2 className="text-lg font-semibold">GraphRAG 智能推荐</h2>
+              <span className="text-xs text-muted-foreground">({matches.length} 条匹配)</span>
+            </div>
+            <div className="space-y-2">
+              {matches.slice(0, 5).map((m) => (
+                <Card
+                  key={m.id}
+                  className="cursor-pointer transition-shadow hover:shadow-md"
+                  onClick={() => navigate(`/matching/${m.id}`)}
+                >
+                  <CardContent className="flex items-center justify-between p-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-sm truncate">{m.jobTitle || m.jobFilename}</span>
+                        {m.llmAssessment && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+                            置信度 {Math.round((m.llmAssessment.confidence || 0) * 100)}%
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {m.companyName || '未知公司'} {m.jobCity ? `· ${m.jobCity}` : ''}
+                      </p>
+                      {m.llmAssessment?.strengths && m.llmAssessment.strengths.length > 0 && (
+                        <p className="text-[11px] text-green-700 dark:text-green-400 mt-1 line-clamp-1">
+                          <TrendingUp className="h-3 w-3 inline mr-1" />
+                          {m.llmAssessment.strengths[0]}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0 ml-3">
+                      {m.llmAssessment?.transferableSkills && m.llmAssessment.transferableSkills.filter(t => t.transferability === 'high').length > 0 && (
+                        <span className="text-[10px] text-muted-foreground hidden sm:block">
+                          <ArrowRightLeft className="h-3 w-3 inline mr-0.5" />
+                          {m.llmAssessment.transferableSkills.filter(t => t.transferability === 'high').length} 可迁移
+                        </span>
+                      )}
+                      <span className={`text-lg font-bold tabular-nums ${scoreColor(m.overallScore)}`}>
+                        {Math.round(m.overallScore)}
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -336,6 +389,58 @@ export function Dashboard() {
               </Card>
             )
           })}
+        </div>
+      )}
+
+      {/* GraphRAG 推荐摘要 */}
+      {matches.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Brain className="h-4 w-4 text-purple-500" />
+            <h2 className="text-lg font-semibold">GraphRAG 候选人推荐</h2>
+            <span className="text-xs text-muted-foreground">({matches.length} 条匹配)</span>
+          </div>
+          <div className="space-y-2">
+            {matches.slice(0, 5).map((m) => (
+              <Card
+                key={m.id}
+                className="cursor-pointer transition-shadow hover:shadow-md"
+                onClick={() => navigate(`/matching/${m.id}`)}
+              >
+                <CardContent className="flex items-center justify-between p-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-sm truncate">{m.candidateName || '未知候选人'}</span>
+                      {m.llmAssessment && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+                          置信度 {Math.round((m.llmAssessment.confidence || 0) * 100)}%
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {m.candidateCity || ''} → {m.jobTitle || m.jobFilename}
+                    </p>
+                    {m.llmAssessment?.strengths && m.llmAssessment.strengths.length > 0 && (
+                      <p className="text-[11px] text-green-700 dark:text-green-400 mt-1 line-clamp-1">
+                        <TrendingUp className="h-3 w-3 inline mr-1" />
+                        {m.llmAssessment.strengths[0]}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0 ml-3">
+                    {m.llmAssessment && m.llmAssessment.readinessMonths > 0 && (
+                      <span className="text-[10px] text-muted-foreground hidden sm:block">
+                        上手 {m.llmAssessment.readinessMonths} 月
+                      </span>
+                    )}
+                    <span className={`text-lg font-bold tabular-nums ${scoreColor(m.overallScore)}`}>
+                      {Math.round(m.overallScore)}
+                    </span>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         </div>
       )}
     </div>
