@@ -5,49 +5,49 @@ import {
   CreateDateColumn,
   ManyToOne,
   JoinColumn,
-} from 'typeorm'
-import { Document } from '../document/document.entity'
-import { Skill } from './skill.entity'
+} from 'typeorm';
+import { Document } from '../document/document.entity';
+import { Skill } from './skill.entity';
 
-export type Proficiency = 'beginner' | 'intermediate' | 'advanced' | 'expert'
+export type Proficiency = 'beginner' | 'intermediate' | 'advanced' | 'expert';
 
 @Entity('document_skills')
 export class DocumentSkill {
   @PrimaryGeneratedColumn('uuid')
-  id: string
+  id: string;
 
   @Column({ name: 'document_id' })
-  documentId: string
+  documentId: string;
 
   @ManyToOne(() => Document, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'document_id' })
-  document: Document
+  document: Document;
 
   @Column({ name: 'skill_id' })
-  skillId: number
+  skillId: number;
 
   @ManyToOne(() => Skill)
   @JoinColumn({ name: 'skill_id' })
-  skill: Skill
+  skill: Skill;
 
   @Column({ type: 'varchar', length: 20, nullable: true })
-  proficiency: Proficiency
+  proficiency: Proficiency;
 
   @Column({ name: 'skill_name', length: 128, nullable: true })
-  skillName: string
+  skillName: string;
 
   @Column({ type: 'decimal', precision: 3, scale: 2, nullable: true })
-  confidence: number
+  confidence: number;
 
   @Column({ name: 'source_text', type: 'text', nullable: true })
-  sourceText: string
+  sourceText: string;
 
   @Column({ name: 'extraction_method', length: 16, nullable: true })
-  extractionMethod: string  // 'llm' | 'rule'
+  extractionMethod: string; // 'llm' | 'rule'
 
   @Column({ name: 'category', type: 'varchar', length: 64, nullable: true })
-  category: string
+  category: string;
 
   @CreateDateColumn({ name: 'created_at' })
-  createdAt: Date
+  createdAt: Date;
 }

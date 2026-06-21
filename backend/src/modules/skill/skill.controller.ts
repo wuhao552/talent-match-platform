@@ -1,6 +1,6 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common'
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
-import { SkillService } from './skill.service'
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { SkillService } from './skill.service';
 
 @Controller('skills')
 @UseGuards(JwtAuthGuard)
@@ -13,26 +13,26 @@ export class SkillController {
       page: page ? parseInt(page) : 1,
       pageSize: 20,
       search,
-    })
-    return { code: 200, message: 'ok', data }
+    });
+    return { code: 200, message: 'ok', data };
   }
 
   @Get(':id')
   async get(@Param('id') id: string) {
-    const data = await this.skillService.findById(parseInt(id))
-    return { code: 200, message: 'ok', data }
+    const data = await this.skillService.findById(parseInt(id));
+    return { code: 200, message: 'ok', data };
   }
 
   @Get(':id/related')
-  async getRelated(@Param('id') id: string) {
-    const ids = await this.skillService.getRelatedSkills(parseInt(id))
+  async getRelated() {
+    const ids = await this.skillService.getRelatedSkills()
     const data = await this.skillService.findByIds(ids)
     return { code: 200, message: 'ok', data }
   }
 
   @Get(':id/frequency')
-  async getFrequency(@Param('id') id: string) {
-    const data = await this.skillService.getFrequency(parseInt(id))
+  async getFrequency() {
+    const data = await this.skillService.getFrequency()
     return { code: 200, message: 'ok', data }
   }
 }

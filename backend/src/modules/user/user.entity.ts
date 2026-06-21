@@ -9,46 +9,46 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
-} from 'typeorm'
+} from 'typeorm';
 
-export type UserRole = 'individual' | 'enterprise' | 'admin'
-export type UserStatus = 'active' | 'disabled'
+export type UserRole = 'individual' | 'enterprise' | 'admin';
+export type UserStatus = 'active' | 'disabled';
 
 @Entity('users')
 export class User {
   @PrimaryGeneratedColumn('uuid')
-  id: string
+  id: string;
 
   @Column({ unique: true, length: 64 })
-  username: string
+  username: string;
 
   @Column({ name: 'password_hash', length: 256 })
-  passwordHash: string
+  passwordHash: string;
 
   @Column({ type: 'varchar', length: 20 })
-  role: UserRole
+  role: UserRole;
 
   @Column({ type: 'varchar', length: 16, default: 'active' })
-  status: UserStatus
+  status: UserStatus;
 
   @Column({ nullable: true, length: 128 })
-  email: string
+  email: string;
 
   @Column({ nullable: true, length: 32 })
-  phone: string
+  phone: string;
 
   @Column({ nullable: true, length: 64 })
-  city: string
+  city: string;
 
   @Column({ name: 'intended_cities', type: 'jsonb', nullable: true })
-  intendedCities: string[]
+  intendedCities: string[];
 
   @Column({ name: 'company_name', nullable: true, length: 128 })
-  companyName: string
+  companyName: string;
 
   @CreateDateColumn({ name: 'created_at' })
-  createdAt: Date
+  createdAt: Date;
 
   @UpdateDateColumn({ name: 'updated_at' })
-  updatedAt: Date
+  updatedAt: Date;
 }

@@ -1,55 +1,139 @@
-import { Injectable } from '@nestjs/common'
-import { createHash } from 'crypto'
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, LessThan } from 'typeorm';
+import { createHash } from 'crypto';
+import { LlmCacheEntity } from './llm-cache.entity';
 
 export interface ExtractedSkill {
-  name: string
-  proficiency: 'beginner' | 'intermediate' | 'advanced' | 'expert'
-  confidence: number
-  sourceText: string
+  name: string;
+  proficiency: 'beginner' | 'intermediate' | 'advanced' | 'expert';
+  confidence: number;
+  sourceText: string;
 }
 
 export interface LlmCallDetail {
-  model: string
-  systemPrompt: string
-  userMessage: string
-  rawResponse: string
-  parsedResult: Record<string, unknown>
-  success: boolean
-  errorMessage?: string
-  tokensUsed?: number
-  latencyMs: number
+  model: string;
+  systemPrompt: string;
+  userMessage: string;
+  rawResponse: string;
+  parsedResult: Record<string, unknown>;
+  success: boolean;
+  errorMessage?: string;
+  tokensUsed?: number;
+  latencyMs: number;
 }
 
 @Injectable()
 export class LlmService {
+  constructor(
+    @InjectRepository(LlmCacheEntity)
+    private cacheRepo: Repository<LlmCacheEntity>,
+  ) {}
 
-  // 复杂任务用 v4-pro，简单任务用 v4-flash
-  private readonly flashModel = 'deepseek-v4-flash'
-  private readonly proModel = process.env.LLM_MODEL || 'deepseek-v4-pro'
+  // 统一使用 v4-flash
+  private readonly flashModel = 'deepseek-v4-flash';
+  private readonly proModel = process.env.LLM_MODEL || 'deepseek-v4-flash';
 
-  // In-memory LLM response cache: keyed by text hash + method + model
-  private readonly _cache = new Map<string, { value: string; expires: number }>()
-  private readonly CACHE_TTL = 30 * 60 * 1000 // 30 minutes
-  private readonly CACHE_MAX = 100
+  // Two-tier cache: L1 = in-memory (fast, limited), L2 = database (persistent)
+  private readonly _cache = new Map<
+    string,
+    { value: string; expires: number }
+  >();
+  private readonly CACHE_TTL = 30 * 60 * 1000; // 30 minutes (L1)
+  private readonly CACHE_TTL_DB = 24 * 60 * 60 * 1000; // 24 hours (L2)
+  private readonly CACHE_MAX = 200;
 
   private cacheKey(method: string, text: string, model: string): string {
-    const hash = createHash('sha256').update(text).digest('hex').slice(0, 16)
-    return `${method}:${model}:${hash}`
+    const hash = createHash('sha256').update(text).digest('hex').slice(0, 16);
+    return `${method}:${model}:${hash}`;
   }
 
-  private cacheGet(key: string): string | null {
-    const entry = this._cache.get(key)
-    if (!entry) return null
-    if (Date.now() > entry.expires) { this._cache.delete(key); return null }
-    return entry.value
-  }
-
-  private cacheSet(key: string, value: string): void {
-    if (this._cache.size >= this.CACHE_MAX) {
-      const oldest = this._cache.keys().next().value
-      if (oldest) this._cache.delete(oldest)
+  /** L1 cache: in-memory */
+  private cacheGetL1(key: string): string | null {
+    const entry = this._cache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expires) {
+      this._cache.delete(key);
+      return null;
     }
-    this._cache.set(key, { value, expires: Date.now() + this.CACHE_TTL })
+    return entry.value;
+  }
+
+  private cacheSetL1(key: string, value: string): void {
+    if (this._cache.size >= this.CACHE_MAX) {
+      const oldest = this._cache.keys().next().value;
+      if (oldest) this._cache.delete(oldest);
+    }
+    this._cache.set(key, { value, expires: Date.now() + this.CACHE_TTL });
+  }
+
+  /** L2 cache: database (persistent across restarts) */
+  private async cacheGetL2(key: string): Promise<string | null> {
+    try {
+      const entry = await this.cacheRepo.findOne({ where: { cacheKey: key } });
+      if (!entry) return null;
+      if (Date.now() > entry.expiresAt.getTime()) {
+        await this.cacheRepo.delete({ cacheKey: key });
+        return null;
+      }
+      return entry.response;
+    } catch {
+      return null; // DB errors should not block LLM calls
+    }
+  }
+
+  private async cacheSetL2(
+    key: string,
+    value: string,
+    method: string,
+    model: string,
+  ): Promise<void> {
+    try {
+      const expiresAt = new Date(Date.now() + this.CACHE_TTL_DB);
+      await this.cacheRepo.save(
+        this.cacheRepo.create({
+          cacheKey: key,
+          response: value,
+          method,
+          model,
+          expiresAt,
+        }),
+      );
+    } catch {
+      // DB errors should not block LLM calls
+    }
+  }
+
+  /** Two-tier cache get: L1 → L2 → miss */
+  private async cacheGet(key: string): Promise<string | null> {
+    const l1 = this.cacheGetL1(key);
+    if (l1 !== null) return l1;
+
+    const l2 = await this.cacheGetL2(key);
+    if (l2 !== null) {
+      this.cacheSetL1(key, l2); // promote to L1
+      return l2;
+    }
+    return null;
+  }
+
+  /** Two-tier cache set: write to both L1 and L2 */
+  private async cacheSet(
+    key: string,
+    value: string,
+    method: string,
+    model: string,
+  ): Promise<void> {
+    this.cacheSetL1(key, value);
+    await this.cacheSetL2(key, value, method, model);
+  }
+
+  /** Periodic cleanup of expired entries */
+  async cleanupExpiredCache(): Promise<number> {
+    const result = await this.cacheRepo.delete({
+      expiresAt: LessThan(new Date()),
+    });
+    return result.affected || 0;
   }
 
   /**
@@ -83,48 +167,58 @@ export class LlmService {
 
 返回纯JSON数组，格式：[{"name":"技能名","proficiency":"熟练度"}]
 proficiency必须是以下之一：beginner, intermediate, advanced, expert
-如果没有提取到技能，返回空数组 []`
+如果没有提取到技能，返回空数组 []`;
 
-    const userMessage = `请从以下文本中提取技能：\n\n${text.slice(0, 8000)}`
+    const userMessage = `请从以下文本中提取技能：\n\n${text.slice(0, 8000)}`;
 
-    const startTime = Date.now()
-    let rawResponse: string
+    const startTime = Date.now();
+    let rawResponse: string;
 
     if (onChunk) {
-      rawResponse = ''
-      for await (const chunk of this.callLLMStream(systemPrompt, userMessage, this.flashModel)) {
-        if (!chunk.done) onChunk(chunk.token)
-        rawResponse = chunk.fullText
+      rawResponse = '';
+      for await (const chunk of this.callLLMStream(
+        systemPrompt,
+        userMessage,
+        this.flashModel,
+      )) {
+        if (!chunk.done) onChunk(chunk.token);
+        rawResponse = chunk.fullText;
       }
     } else {
-      const ck = this.cacheKey('extractSkills', userMessage, this.flashModel)
-      const cached = this.cacheGet(ck)
+      const ck = this.cacheKey('extractSkills', userMessage, this.flashModel);
+      const cached = await this.cacheGet(ck);
       if (cached) {
-        rawResponse = cached
+        rawResponse = cached;
       } else {
-        rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
-        this.cacheSet(ck, rawResponse)
+        rawResponse = await this.callLLM(
+          systemPrompt,
+          userMessage,
+          this.flashModel,
+        );
+        await this.cacheSet(ck, rawResponse, 'extractSkills', this.flashModel);
       }
     }
 
-    const latencyMs = Date.now() - startTime
+    const latencyMs = Date.now() - startTime;
 
-    const jsonMatch = rawResponse.match(/\[[\s\S]*\]/)
+    const jsonMatch = rawResponse.match(/\[[\s\S]*\]/);
     if (!jsonMatch) {
-      throw new Error(`LLM 返回格式无法解析，原始响应: ${rawResponse.slice(0, 300)}`)
+      throw new Error(
+        `LLM 返回格式无法解析，原始响应: ${rawResponse.slice(0, 300)}`,
+      );
     }
 
     const parsed = JSON.parse(jsonMatch[0]) as Array<{
-      name: string
-      proficiency: string
-    }>
+      name: string;
+      proficiency: string;
+    }>;
 
     const skills: ExtractedSkill[] = parsed.map((s) => ({
       name: s.name,
       proficiency: this.validateProficiency(s.proficiency),
       confidence: 0.95,
       sourceText: '',
-    }))
+    }));
 
     return {
       skills,
@@ -138,7 +232,7 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
         tokensUsed: undefined,
         latencyMs,
       },
-    }
+    };
   }
 
   async parseDocument(
@@ -155,38 +249,48 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
 - summary: 个人简介或职位概述(一段话)
 - education: 教育背景(数组,每项含school/major/degree/year)
 - experience: 工作经历(数组,每项含company/title/duration/description)
-如果没有提取到信息，对应字段为null`
+如果没有提取到信息，对应字段为null`;
 
-    const userMessage = `请解析以下文档：\n\n${text.slice(0, 8000)}`
+    const userMessage = `请解析以下文档：\n\n${text.slice(0, 8000)}`;
 
-    const startTime = Date.now()
-    let rawResponse: string
+    const startTime = Date.now();
+    let rawResponse: string;
 
     if (onChunk) {
-      rawResponse = ''
-      for await (const chunk of this.callLLMStream(systemPrompt, userMessage, this.flashModel)) {
-        if (!chunk.done) onChunk(chunk.token)
-        rawResponse = chunk.fullText
+      rawResponse = '';
+      for await (const chunk of this.callLLMStream(
+        systemPrompt,
+        userMessage,
+        this.flashModel,
+      )) {
+        if (!chunk.done) onChunk(chunk.token);
+        rawResponse = chunk.fullText;
       }
     } else {
-      const ck = this.cacheKey('parseDocument', userMessage, this.flashModel)
-      const cached = this.cacheGet(ck)
+      const ck = this.cacheKey('parseDocument', userMessage, this.flashModel);
+      const cached = await this.cacheGet(ck);
       if (cached) {
-        rawResponse = cached
+        rawResponse = cached;
       } else {
-        rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
-        this.cacheSet(ck, rawResponse)
+        rawResponse = await this.callLLM(
+          systemPrompt,
+          userMessage,
+          this.flashModel,
+        );
+        await this.cacheSet(ck, rawResponse, 'parseDocument', this.flashModel);
       }
     }
 
-    const latencyMs = Date.now() - startTime
+    const latencyMs = Date.now() - startTime;
 
-    const jsonMatch = rawResponse.match(/\{[\s\S]*\}/)
+    const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      throw new Error(`LLM 文档解析返回格式无法解析，原始响应: ${rawResponse.slice(0, 300)}`)
+      throw new Error(
+        `LLM 文档解析返回格式无法解析，原始响应: ${rawResponse.slice(0, 300)}`,
+      );
     }
 
-    const parsed = JSON.parse(jsonMatch[0])
+    const parsed = JSON.parse(jsonMatch[0]);
 
     return {
       parsed,
@@ -200,7 +304,7 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
         tokensUsed: undefined,
         latencyMs,
       },
-    }
+    };
   }
 
   /**
@@ -226,38 +330,57 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
 - requirements: 任职要求(字符串数组，每项一句话)
 - benefits: 福利待遇(字符串数组)
 - summary: 岗位概述(一段话)
-如果没有提取到信息，对应字段为null`
+如果没有提取到信息，对应字段为null`;
 
-    const userMessage = `请解析以下岗位描述：\n\n${text.slice(0, 8000)}`
+    const userMessage = `请解析以下岗位描述：\n\n${text.slice(0, 8000)}`;
 
-    const startTime = Date.now()
-    let rawResponse: string
+    const startTime = Date.now();
+    let rawResponse: string;
 
     if (onChunk) {
-      rawResponse = ''
-      for await (const chunk of this.callLLMStream(systemPrompt, userMessage, this.flashModel)) {
-        if (!chunk.done) onChunk(chunk.token)
-        rawResponse = chunk.fullText
+      rawResponse = '';
+      for await (const chunk of this.callLLMStream(
+        systemPrompt,
+        userMessage,
+        this.flashModel,
+      )) {
+        if (!chunk.done) onChunk(chunk.token);
+        rawResponse = chunk.fullText;
       }
     } else {
-      const ck = this.cacheKey('parseJobDescription', userMessage, this.flashModel)
-      const cached = this.cacheGet(ck)
+      const ck = this.cacheKey(
+        'parseJobDescription',
+        userMessage,
+        this.flashModel,
+      );
+      const cached = await this.cacheGet(ck);
       if (cached) {
-        rawResponse = cached
+        rawResponse = cached;
       } else {
-        rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
-        this.cacheSet(ck, rawResponse)
+        rawResponse = await this.callLLM(
+          systemPrompt,
+          userMessage,
+          this.flashModel,
+        );
+        await this.cacheSet(
+          ck,
+          rawResponse,
+          'parseJobDescription',
+          this.flashModel,
+        );
       }
     }
 
-    const latencyMs = Date.now() - startTime
+    const latencyMs = Date.now() - startTime;
 
-    const jsonMatch = rawResponse.match(/\{[\s\S]*\}/)
+    const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      throw new Error(`LLM 岗位解析返回格式无法解析，原始响应: ${rawResponse.slice(0, 300)}`)
+      throw new Error(
+        `LLM 岗位解析返回格式无法解析，原始响应: ${rawResponse.slice(0, 300)}`,
+      );
     }
 
-    const parsed = JSON.parse(jsonMatch[0])
+    const parsed = JSON.parse(jsonMatch[0]);
 
     return {
       parsed,
@@ -271,7 +394,7 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
         tokensUsed: undefined,
         latencyMs,
       },
-    }
+    };
   }
 
   /**
@@ -306,48 +429,67 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
 返回纯JSON数组，格式：[{"name":"技能名","proficiency":"熟练度"}]
 proficiency必须是以下之一：beginner, intermediate, advanced, expert
 注意：请区分"必备技能"和"加分技能"——必备技能通常对应advanced/expert，加分技能通常对应beginner/intermediate。
-如果岗位描述中没有明确的技能要求，返回空数组 []`
+如果岗位描述中没有明确的技能要求，返回空数组 []`;
 
-    const userMessage = `请从以下岗位描述中提取技能要求：\n\n${text.slice(0, 8000)}`
+    const userMessage = `请从以下岗位描述中提取技能要求：\n\n${text.slice(0, 8000)}`;
 
-    const startTime = Date.now()
-    let rawResponse: string
+    const startTime = Date.now();
+    let rawResponse: string;
 
     if (onChunk) {
-      rawResponse = ''
-      for await (const chunk of this.callLLMStream(systemPrompt, userMessage, this.flashModel)) {
-        if (!chunk.done) onChunk(chunk.token)
-        rawResponse = chunk.fullText
+      rawResponse = '';
+      for await (const chunk of this.callLLMStream(
+        systemPrompt,
+        userMessage,
+        this.flashModel,
+      )) {
+        if (!chunk.done) onChunk(chunk.token);
+        rawResponse = chunk.fullText;
       }
     } else {
-      const ck = this.cacheKey('extractJobSkills', userMessage, this.flashModel)
-      const cached = this.cacheGet(ck)
+      const ck = this.cacheKey(
+        'extractJobSkills',
+        userMessage,
+        this.flashModel,
+      );
+      const cached = await this.cacheGet(ck);
       if (cached) {
-        rawResponse = cached
+        rawResponse = cached;
       } else {
-        rawResponse = await this.callLLM(systemPrompt, userMessage, this.flashModel)
-        this.cacheSet(ck, rawResponse)
+        rawResponse = await this.callLLM(
+          systemPrompt,
+          userMessage,
+          this.flashModel,
+        );
+        await this.cacheSet(
+          ck,
+          rawResponse,
+          'extractJobSkills',
+          this.flashModel,
+        );
       }
     }
 
-    const latencyMs = Date.now() - startTime
+    const latencyMs = Date.now() - startTime;
 
-    const jsonMatch = rawResponse.match(/\[[\s\S]*\]/)
+    const jsonMatch = rawResponse.match(/\[[\s\S]*\]/);
     if (!jsonMatch) {
-      throw new Error(`LLM 岗位技能提取返回格式无法解析，原始响应: ${rawResponse.slice(0, 300)}`)
+      throw new Error(
+        `LLM 岗位技能提取返回格式无法解析，原始响应: ${rawResponse.slice(0, 300)}`,
+      );
     }
 
     const parsed = JSON.parse(jsonMatch[0]) as Array<{
-      name: string
-      proficiency: string
-    }>
+      name: string;
+      proficiency: string;
+    }>;
 
     const skills: ExtractedSkill[] = parsed.map((s) => ({
       name: s.name,
       proficiency: this.validateProficiency(s.proficiency),
       confidence: 0.95,
       sourceText: '',
-    }))
+    }));
 
     return {
       skills,
@@ -361,7 +503,7 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
         tokensUsed: undefined,
         latencyMs,
       },
-    }
+    };
   }
 
   /**
@@ -372,15 +514,15 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     userMessage: string,
     model: string,
   ): AsyncGenerator<{ token: string; done: boolean; fullText: string }> {
-    const apiKey = process.env.LLM_API_KEY
-    if (!apiKey) throw new Error('LLM_API_KEY 未配置')
+    const apiKey = process.env.LLM_API_KEY;
+    if (!apiKey) throw new Error('LLM_API_KEY 未配置');
 
-    const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com'
+    const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
 
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 120000)
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120000);
 
-    let fullText = ''
+    let fullText = '';
 
     try {
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -401,48 +543,48 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
           stream: true,
           thinking: { type: 'disabled' },
         }),
-      })
-      clearTimeout(timeout)
+      });
+      clearTimeout(timeout);
 
       if (!response.ok) {
-        const errBody = await response.text()
-        let errMsg = `LLM API 错误 ${response.status}`
+        const errBody = await response.text();
+        let errMsg = `LLM API 错误 ${response.status}`;
         try {
-          const errJson = JSON.parse(errBody)
-          errMsg += `: ${errJson.error?.message || errBody}`
+          const errJson = JSON.parse(errBody);
+          errMsg += `: ${errJson.error?.message || errBody}`;
         } catch {
-          errMsg += `: ${errBody.slice(0, 200)}`
+          errMsg += `: ${errBody.slice(0, 200)}`;
         }
-        throw new Error(errMsg)
+        throw new Error(errMsg);
       }
 
-      const reader = response.body?.getReader()
-      if (!reader) throw new Error('流式响应 body 为空')
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('流式响应 body 为空');
 
-      const decoder = new TextDecoder()
-      let buffer = ''
+      const decoder = new TextDecoder();
+      let buffer = '';
 
       while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
+        const { done, value } = await reader.read();
+        if (done) break;
 
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
         for (const line of lines) {
-          const trimmed = line.trim()
-          if (!trimmed || !trimmed.startsWith('data:')) continue
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data:')) continue;
 
-          const json = trimmed.slice(5).trim()
-          if (json === '[DONE]') continue
+          const json = trimmed.slice(5).trim();
+          if (json === '[DONE]') continue;
 
           try {
-            const parsed = JSON.parse(json)
-            const delta = parsed.choices?.[0]?.delta?.content
+            const parsed = JSON.parse(json);
+            const delta = parsed.choices?.[0]?.delta?.content;
             if (delta) {
-              fullText += delta
-              yield { token: delta, done: false, fullText }
+              fullText += delta;
+              yield { token: delta, done: false, fullText };
             }
           } catch {
             // skip unparseable chunks
@@ -450,9 +592,9 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
         }
       }
 
-      yield { token: '', done: true, fullText }
+      yield { token: '', done: true, fullText };
     } finally {
-      clearTimeout(timeout)
+      clearTimeout(timeout);
     }
   }
 
@@ -461,12 +603,16 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     userMessage: string,
     model?: string,
   ): Promise<Record<string, unknown>> {
-    const raw = await this.callLLM(systemPrompt, userMessage, model || this.flashModel)
-    const jsonMatch = raw.match(/\{[\s\S]*\}/)
+    const raw = await this.callLLM(
+      systemPrompt,
+      userMessage,
+      model || this.flashModel,
+    );
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      throw new Error(`LLM JSON 解析失败，原始响应: ${raw.slice(0, 300)}`)
+      throw new Error(`LLM JSON 解析失败，原始响应: ${raw.slice(0, 300)}`);
     }
-    return JSON.parse(jsonMatch[0])
+    return JSON.parse(jsonMatch[0]);
   }
 
   /**
@@ -478,23 +624,33 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     onChunk?: (token: string) => void,
     model?: string,
   ): Promise<Record<string, unknown>[]> {
-    const startTime = Date.now()
-    let rawResponse = ''
+    const startTime = Date.now();
+    let rawResponse = '';
 
     if (onChunk) {
-      for await (const chunk of this.callLLMStream(systemPrompt, userMessage, model || this.flashModel)) {
-        if (!chunk.done) onChunk(chunk.token)
-        rawResponse = chunk.fullText
+      for await (const chunk of this.callLLMStream(
+        systemPrompt,
+        userMessage,
+        model || this.flashModel,
+      )) {
+        if (!chunk.done) onChunk(chunk.token);
+        rawResponse = chunk.fullText;
       }
     } else {
-      rawResponse = await this.callLLM(systemPrompt, userMessage, model || this.flashModel)
+      rawResponse = await this.callLLM(
+        systemPrompt,
+        userMessage,
+        model || this.flashModel,
+      );
     }
 
-    const jsonMatch = rawResponse.match(/\[[\s\S]*\]/)
+    const jsonMatch = rawResponse.match(/\[[\s\S]*\]/);
     if (!jsonMatch) {
-      throw new Error(`LLM JSON 数组解析失败，原始响应: ${rawResponse.slice(0, 300)}`)
+      throw new Error(
+        `LLM JSON 数组解析失败，原始响应: ${rawResponse.slice(0, 300)}`,
+      );
     }
-    return JSON.parse(jsonMatch[0]) as Record<string, unknown>[]
+    return JSON.parse(jsonMatch[0]) as Record<string, unknown>[];
   }
 
   /**
@@ -505,16 +661,16 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     userMessage: string,
     model?: string,
   ): Promise<string> {
-    const apiKey = process.env.LLM_API_KEY
+    const apiKey = process.env.LLM_API_KEY;
     if (!apiKey) {
-      throw new Error('LLM_API_KEY 未配置，请在 .env 中设置 API Key')
+      throw new Error('LLM_API_KEY 未配置，请在 .env 中设置 API Key');
     }
 
-    const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com'
-    const useModel = model || this.proModel
+    const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
+    const useModel = model || this.proModel;
 
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 120000)
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120000);
 
     try {
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -534,49 +690,60 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
           max_tokens: 16000,
           thinking: { type: 'disabled' },
         }),
-      })
-      clearTimeout(timeout)
+      });
+      clearTimeout(timeout);
 
       if (!response.ok) {
-        const errBody = await response.text()
-        let errMsg = `LLM API 错误 ${response.status}`
+        const errBody = await response.text();
+        let errMsg = `LLM API 错误 ${response.status}`;
         try {
-          const errJson = JSON.parse(errBody)
-          errMsg += `: ${errJson.error?.message || errBody}`
+          const errJson = JSON.parse(errBody);
+          errMsg += `: ${errJson.error?.message || errBody}`;
         } catch {
-          errMsg += `: ${errBody.slice(0, 200)}`
+          errMsg += `: ${errBody.slice(0, 200)}`;
         }
-        throw new Error(errMsg)
+        throw new Error(errMsg);
       }
 
       const data = (await response.json()) as {
-        choices: Array<{ message: { content: string } }>
-        usage?: { total_tokens: number }
-      }
+        choices: Array<{ message: { content: string } }>;
+        usage?: { total_tokens: number };
+      };
 
-      const content = data.choices[0]?.message?.content || ''
+      const content = data.choices[0]?.message?.content || '';
       if (!content.trim()) {
-        throw new Error(`LLM 返回空内容 (model=${useModel}, thinking=disabled)`)
+        throw new Error(
+          `LLM 返回空内容 (model=${useModel}, thinking=disabled)`,
+        );
       }
 
-      return content
+      return content;
     } finally {
-      clearTimeout(timeout)
+      clearTimeout(timeout);
     }
   }
 
-  private validateProficiency(p: string): 'beginner' | 'intermediate' | 'advanced' | 'expert' {
-    const valid = ['beginner', 'intermediate', 'advanced', 'expert']
-    const lower = p?.toLowerCase()
+  private validateProficiency(
+    p: string,
+  ): 'beginner' | 'intermediate' | 'advanced' | 'expert' {
+    const valid = ['beginner', 'intermediate', 'advanced', 'expert'];
+    const lower = p?.toLowerCase();
     const map: Record<string, string> = {
-      '初级': 'beginner', '入门': 'beginner', '了解': 'beginner',
-      '中级': 'intermediate', '熟悉': 'intermediate',
-      '高级': 'advanced', '熟练': 'advanced', '掌握': 'advanced',
-      '专家': 'expert', '精通': 'expert', '擅长': 'expert',
-    }
-    const mapped = map[lower] || lower
+      初级: 'beginner',
+      入门: 'beginner',
+      了解: 'beginner',
+      中级: 'intermediate',
+      熟悉: 'intermediate',
+      高级: 'advanced',
+      熟练: 'advanced',
+      掌握: 'advanced',
+      专家: 'expert',
+      精通: 'expert',
+      擅长: 'expert',
+    };
+    const mapped = map[lower] || lower;
     return valid.includes(mapped)
       ? (mapped as 'beginner' | 'intermediate' | 'advanced' | 'expert')
-      : 'intermediate'
+      : 'intermediate';
   }
 }

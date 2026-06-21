@@ -1,23 +1,34 @@
 import {
-  Controller, Post, Get, Delete, Param, Body, Res, Query, UnauthorizedException,
-  UseGuards, UseInterceptors, UploadedFile, UploadedFiles,
-} from '@nestjs/common'
-import type { Response } from 'express'
-import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express'
-import { diskStorage } from 'multer'
-import { extname } from 'path'
-import { JwtService } from '@nestjs/jwt'
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
-import { CurrentUser } from '../../common/decorators/current-user.decorator'
-import { DocumentService } from './document.service'
-import type { PipelineStep } from '../../agents/orchestrator.agent'
-import { v4 as uuid } from 'uuid'
+  Controller,
+  Post,
+  Get,
+  Delete,
+  Param,
+  Body,
+  Res,
+  Query,
+  UnauthorizedException,
+  UseGuards,
+  UseInterceptors,
+  UploadedFile,
+  UploadedFiles,
+} from '@nestjs/common';
+import type { Response } from 'express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname } from 'path';
+import { JwtService } from '@nestjs/jwt';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { DocumentService } from './document.service';
+import type { PipelineStep } from '../../agents/orchestrator.agent';
+import { v4 as uuid } from 'uuid';
 
 function decodeFileName(name: string): string {
   try {
-    return Buffer.from(name, 'latin1').toString('utf8')
+    return Buffer.from(name, 'latin1').toString('utf8');
   } catch {
-    return name
+    return name;
   }
 }
 
@@ -35,18 +46,18 @@ export class DocumentController {
       storage: diskStorage({
         destination: './uploads',
         filename: (_req, file, cb) => {
-          const name = `${uuid()}${extname(decodeFileName(file.originalname))}`
-          cb(null, name)
+          const name = `${uuid()}${extname(decodeFileName(file.originalname))}`;
+          cb(null, name);
         },
       }),
       limits: { fileSize: 10 * 1024 * 1024 },
       fileFilter: (_req, file, cb) => {
-        const allowed = ['.pdf', '.doc', '.docx']
-        const ext = extname(decodeFileName(file.originalname)).toLowerCase()
+        const allowed = ['.pdf', '.doc', '.docx'];
+        const ext = extname(decodeFileName(file.originalname)).toLowerCase();
         if (allowed.includes(ext)) {
-          cb(null, true)
+          cb(null, true);
         } else {
-          cb(new Error('仅支持 PDF、DOC、DOCX 格式'), false)
+          cb(new Error('仅支持 PDF、DOC、DOCX 格式'), false);
         }
       },
     }),
@@ -56,9 +67,13 @@ export class DocumentController {
     @Body('docType') docType: string,
     @CurrentUser() user: { id: string },
   ) {
-    const doc = await this.documentService.create(file, docType as 'resume' | 'job_description', user.id)
+    const doc = await this.documentService.create(
+      file,
+      docType as 'resume' | 'job_description',
+      user.id,
+    );
     // Don't parse here — SSE /graph/:id will trigger parseDocumentStream instead
-    return { code: 200, message: '上传成功', data: doc }
+    return { code: 200, message: '上传成功', data: doc };
   }
 
   @Post('upload-batch')
@@ -68,18 +83,18 @@ export class DocumentController {
       storage: diskStorage({
         destination: './uploads',
         filename: (_req, file, cb) => {
-          const name = `${uuid()}${extname(decodeFileName(file.originalname))}`
-          cb(null, name)
+          const name = `${uuid()}${extname(decodeFileName(file.originalname))}`;
+          cb(null, name);
         },
       }),
       limits: { fileSize: 10 * 1024 * 1024 },
       fileFilter: (_req, file, cb) => {
-        const allowed = ['.pdf', '.doc', '.docx']
-        const ext = extname(decodeFileName(file.originalname)).toLowerCase()
+        const allowed = ['.pdf', '.doc', '.docx'];
+        const ext = extname(decodeFileName(file.originalname)).toLowerCase();
         if (allowed.includes(ext)) {
-          cb(null, true)
+          cb(null, true);
         } else {
-          cb(new Error('仅支持 PDF、DOC、DOCX 格式'), false)
+          cb(new Error('仅支持 PDF、DOC、DOCX 格式'), false);
         }
       },
     }),
@@ -89,55 +104,64 @@ export class DocumentController {
     @Body('docType') docType: string,
     @CurrentUser() user: { id: string },
   ) {
-    const docs = await this.documentService.createBatch(files, docType as 'resume' | 'job_description', user.id)
-    return { code: 200, message: `成功上传 ${docs.length} 个文件`, data: docs }
+    const docs = await this.documentService.createBatch(
+      files,
+      docType as 'resume' | 'job_description',
+      user.id,
+    );
+    return { code: 200, message: `成功上传 ${docs.length} 个文件`, data: docs };
   }
 
   @Get()
   @UseGuards(JwtAuthGuard)
   async list(@CurrentUser() user: { id: string }) {
-    const docs = await this.documentService.findByUser(user.id)
-    return { code: 200, message: 'ok', data: docs }
+    const docs = await this.documentService.findByUser(user.id);
+    return { code: 200, message: 'ok', data: docs };
   }
 
   @Get('skills/batch')
   @UseGuards(JwtAuthGuard)
   async getSkillsBatch(@Query('ids') ids: string | string[]) {
-    const idList = Array.isArray(ids) ? ids : (ids || '').split(',').map((s) => s.trim()).filter(Boolean)
-    if (idList.length === 0) return { code: 200, message: 'ok', data: [] }
-    const skills = await this.documentService.getDocumentSkillsBatch(idList)
-    return { code: 200, message: 'ok', data: skills }
+    const idList = Array.isArray(ids)
+      ? ids
+      : (ids || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+    if (idList.length === 0) return { code: 200, message: 'ok', data: [] };
+    const skills = await this.documentService.getDocumentSkillsBatch(idList);
+    return { code: 200, message: 'ok', data: skills };
   }
 
   @Get(':id')
   @UseGuards(JwtAuthGuard)
   async get(@Param('id') id: string) {
-    const doc = await this.documentService.findById(id)
-    return { code: 200, message: 'ok', data: doc }
+    const doc = await this.documentService.findById(id);
+    return { code: 200, message: 'ok', data: doc };
   }
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
   async delete(@Param('id') id: string, @CurrentUser() user: { id: string }) {
-    await this.documentService.delete(id, user.id)
-    return { code: 200, message: '删除成功', data: null }
+    await this.documentService.delete(id, user.id);
+    return { code: 200, message: '删除成功', data: null };
   }
 
   @Post(':id/parse')
   @UseGuards(JwtAuthGuard)
   async parse(@Param('id') id: string) {
     // Fire-and-forget: parse in background, return immediately
-    this.documentService.parseDocument(id).catch((err) =>
-      console.error(`Parse failed for ${id}:`, err.message),
-    )
-    return { code: 200, message: '解析任务已提交，请稍后刷新查看结果' }
+    this.documentService
+      .parseDocument(id)
+      .catch((err) => console.error(`Parse failed for ${id}:`, err.message));
+    return { code: 200, message: '解析任务已提交，请稍后刷新查看结果' };
   }
 
   @Get(':id/skills')
   @UseGuards(JwtAuthGuard)
   async getSkills(@Param('id') id: string) {
-    const skills = await this.documentService.getDocumentSkills(id)
-    return { code: 200, message: 'ok', data: skills }
+    const skills = await this.documentService.getDocumentSkills(id);
+    return { code: 200, message: 'ok', data: skills };
   }
 
   // SSE 流式推送 Agent 流水线执行过程（token 通过 query 传入，因为 EventSource 不支持自定义 Header）
@@ -150,66 +174,83 @@ export class DocumentController {
   ) {
     // Verify JWT manually (EventSource doesn't support custom headers)
     if (!token) {
-      res.status(401).json({ code: 401, message: '缺少 token 参数' })
-      return
+      res.status(401).json({ code: 401, message: '缺少 token 参数' });
+      return;
     }
-    let userId: string
+    let userId: string;
     try {
-      const payload = this.jwtService.verify(token)
-      userId = payload.sub
+      const payload = this.jwtService.verify(token);
+      userId = payload.sub;
     } catch (err) {
-      res.status(401).json({ code: 401, message: 'token 无效: ' + (err as Error).message })
-      return
+      res
+        .status(401)
+        .json({ code: 401, message: 'token 无效: ' + (err as Error).message });
+      return;
     }
 
-    res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache')
-    res.setHeader('Connection', 'keep-alive')
-    res.setHeader('X-Accel-Buffering', 'no')
-    res.flushHeaders()
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
 
     const send = (event: string, data: unknown) => {
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-    }
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
 
     const onProgress = (step: PipelineStep) => {
-      send('progress', step)
-    }
+      send('progress', step);
+    };
 
     const onChunk = (agent: string, token: string) => {
-      send('chunk', { agent, token })
-    }
+      send('chunk', { agent, token });
+    };
 
     try {
-      const doc = await this.documentService.findById(id)
-      send('start', { documentId: id, filename: doc.originalFilename, userId })
+      const doc = await this.documentService.findById(id);
+      send('start', { documentId: id, filename: doc.originalFilename, userId });
 
       // Skip re-parsing if already parsed (e.g. background parseDocument finished first)
       // unless force=true is requested (e.g. to re-extract skills)
-      let result
+      let result;
       if (doc.status === 'parsed' && force !== 'true') {
-        result = { success: true, data: { parsedText: doc.parsedText, parsedJson: doc.parsedJson, extractedSkills: [], mappedSkills: [], unmatchedSkills: [], pipelineSteps: [] }, summary: '已解析' }
+        result = {
+          success: true,
+          data: {
+            parsedText: doc.parsedText,
+            parsedJson: doc.parsedJson,
+            extractedSkills: [],
+            mappedSkills: [],
+            unmatchedSkills: [],
+            pipelineSteps: [],
+          },
+          summary: '已解析',
+        };
       } else {
-        result = await this.documentService.parseDocumentStream(id, onProgress, onChunk)
+        result = await this.documentService.parseDocumentStream(
+          id,
+          onProgress,
+          onChunk,
+        );
       }
 
       send('complete', {
         success: result.success,
         skillCount: (result.data['extractedSkills'] as any[])?.length || 0,
         summary: result.summary,
-      })
+      });
 
       // Send the full parsed doc as final data so frontend can update
-      const updatedDoc = await this.documentService.findById(id)
+      const updatedDoc = await this.documentService.findById(id);
       send('result', {
         status: updatedDoc.status,
         parsedJson: updatedDoc.parsedJson,
         parsedText: updatedDoc.parsedText,
-      })
+      });
     } catch (err) {
-      send('error', { message: (err as Error).message })
+      send('error', { message: (err as Error).message });
     } finally {
-      res.end()
+      res.end();
     }
   }
 }
