@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { matchingApi, documentApi, graphApi } from '@/services/api'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { matchingApi, documentApi } from '@/services/api'
+import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { scoreColor, proficiencyLabel } from '@/lib/utils'
@@ -9,7 +9,7 @@ import { SkillForceGraph } from '@/components/graph/SkillForceGraph'
 import {
   ChevronLeft, MapPin, Building, Clock, AlertTriangle, RefreshCw,
   CheckCircle2, XCircle, Loader2, Brain, GitBranch, Zap,
-  TrendingUp, ArrowRightLeft, Network,
+  TrendingUp, ArrowRightLeft,
 } from 'lucide-react'
 import type { MatchResult, Document, DocumentSkill, AlgorithmStep } from '@/types'
 
@@ -26,7 +26,6 @@ function PhaseIcon({ phase }: { phase: string }) {
     skill_matching: <GitBranch className="h-4 w-4" />,
     llm_assessment: <Brain className="h-4 w-4" />,
     score_fusion: <Zap className="h-4 w-4" />,
-    community_context: <Network className="h-4 w-4" />,
     data_loading: <Loader2 className="h-4 w-4" />,
     result: <CheckCircle2 className="h-4 w-4" />,
   }
@@ -51,7 +50,6 @@ export function MatchingResult() {
   const [jobDoc, setJobDoc] = useState<Document | null>(null)
   const [skills, setSkills] = useState<DocumentSkill[]>([])
   const [jobSkills, setJobSkills] = useState<DocumentSkill[]>([])
-  const [coocEdges, setCoocEdges] = useState<Array<{ sourceId: number; targetId: number; freqSkill: number }>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [reparsing, setReparsing] = useState(false)
@@ -70,16 +68,6 @@ export function MatchingResult() {
         setJobDoc(job)
         setSkills(sk)
         setJobSkills(jsk)
-        const jskIds = jsk.map((s: DocumentSkill) => s.skillId)
-        if (jskIds.length === 0 && res.data.matchDetails) {
-          for (const d of res.data.matchDetails) {
-            if (d.jobSkillId && d.jobSkillId > 0) jskIds.push(d.jobSkillId)
-          }
-        }
-        const allIds = [...new Set([...sk.map((s: DocumentSkill) => s.skillId), ...jskIds])]
-        if (allIds.length >= 2) {
-          graphApi.getCooccurrenceBatch(allIds).then((r) => setCoocEdges(r.data)).catch(() => {})
-        }
       })
       .catch(() => setError('未找到该匹配结果'))
       .finally(() => setLoading(false))
@@ -134,7 +122,6 @@ export function MatchingResult() {
   const breakdown = match.scoreBreakdown
   const trace = match.algorithmTrace || []
   const llm = match.llmAssessment
-  const community = match.communityContext
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -146,7 +133,7 @@ export function MatchingResult() {
         <div className="flex-1">
           <h1 className="text-xl font-bold">{match.jobTitle || match.jobFilename || '职位详情'}</h1>
           <p className="text-sm text-muted-foreground">
-            GraphRAG 深度匹配 · {match.matchDetails?.length || 0} 项技能匹配
+            深度匹配 · {match.matchDetails?.length || 0} 项技能匹配
           </p>
         </div>
         <div className="text-right">
@@ -205,7 +192,7 @@ export function MatchingResult() {
       </Card>
 
       {/* ═══════════════════════════════════════════════════════ */}
-      {/* GraphRAG Algorithm Pipeline Visualization               */}
+      {/* Algorithm Pipeline Visualization                               */}
       {/* ═══════════════════════════════════════════════════════ */}
       {trace.length > 0 && (
         <Card className="border-primary/20">
@@ -215,7 +202,7 @@ export function MatchingResult() {
               算法执行流水线
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              GraphRAG 工作流: 技能识别 → 社区上下文 → LLM 深度评估
+              工作流: 数据加载 → 技能匹配 → LLM 深度评估
             </p>
           </CardHeader>
           <CardContent>
@@ -261,47 +248,67 @@ export function MatchingResult() {
       )}
 
       {/* ═══════════════════════════════════════════════════════ */}
-      {/* Score Breakdown: GraphRAG                              */}
+      {/* Score Breakdown                                         */}
       {/* ═══════════════════════════════════════════════════════ */}
-      {breakdown && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">匹配分构成</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {breakdown.llmScore > 0 && (
-              <div>
-                <div className="flex items-center gap-2 mb-3">
-                  <Brain className="h-4 w-4 text-purple-500" />
-                  <span className="text-sm font-medium text-purple-700 dark:text-purple-400">GraphRAG LLM 评估</span>
-                  {llm?.confidence != null && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
-                      置信度 {(llm.confidence * 100).toFixed(0)}%
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center justify-between pl-6">
-                  <div className="flex-1 h-3 rounded-full bg-muted overflow-hidden">
-                    <div className="h-full rounded-full bg-gradient-to-r from-purple-500 to-blue-500 transition-all" style={{ width: `${breakdown.llmScore}%` }} />
-                  </div>
-                  <span className={`ml-4 text-2xl font-bold tabular-nums ${scoreColor(breakdown.llmScore)}`}>
-                    {Math.round(breakdown.llmScore)}
+      {breakdown && (() => {
+        const hasLlm = breakdown.llmScore > 0
+        const dims = breakdown.algorithmDimensions
+        const dimItems = dims ? [
+          { label: '覆盖率', value: dims.coverage },
+          { label: '达标率', value: dims.adequacy },
+          { label: '领域重叠', value: dims.domainOverlap },
+          { label: '模糊加成', value: dims.transferBonus },
+        ] : []
+
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>匹配分构成</CardTitle>
+              <CardAction>
+                <div className="flex items-baseline gap-1">
+                  <span className={`text-3xl font-bold tabular-nums leading-none ${scoreColor(breakdown.overallScore)}`}>
+                    {Math.round(breakdown.overallScore)}
                   </span>
+                  <span className="text-xs text-muted-foreground">/100</span>
                 </div>
+              </CardAction>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {/* 子分数 */}
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+                <span className="text-muted-foreground">
+                  算法
+                  <span className={`ml-1.5 font-semibold tabular-nums ${scoreColor(breakdown.algorithmScore)}`}>
+                    {Math.round(breakdown.algorithmScore)}
+                  </span>
+                </span>
+                <span className="text-muted-foreground">
+                  LLM
+                  {hasLlm ? (
+                    <span className={`ml-1.5 font-semibold tabular-nums ${scoreColor(breakdown.llmScore)}`}>
+                      {Math.round(breakdown.llmScore)}
+                    </span>
+                  ) : (
+                    <Badge variant="outline" className="ml-1.5 text-[10px]">未参与</Badge>
+                  )}
+                </span>
               </div>
-            )}
-            <div className="flex items-center justify-between pt-3 border-t">
-              <div className="flex items-center gap-2">
-                <Zap className="h-4 w-4 text-amber-500" />
-                <span className="text-sm font-medium">最终匹配分</span>
-              </div>
-              <span className={`text-2xl font-bold tabular-nums ${scoreColor(breakdown.overallScore)}`}>
-                {Math.round(breakdown.overallScore)}%
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+
+              {/* 算法四维度 */}
+              {dimItems.length > 0 && (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  {dimItems.map((d) => (
+                    <span key={d.label}>
+                      {d.label}
+                      <span className="ml-1 font-medium tabular-nums text-foreground">{Math.round(d.value * 100)}%</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )
+      })()}
 
       {/* ═══════════════════════════════════════════════════════ */}
       {/* LLM Assessment: Strengths, Gaps, Transferable Skills     */}
@@ -390,61 +397,6 @@ export function MatchingResult() {
       )}
 
       {/* ═══════════════════════════════════════════════════════ */}
-      {/* Community Context                                        */}
-      {/* ═══════════════════════════════════════════════════════ */}
-      {community && (community.resumeCommunities.length > 0 || community.jobCommunities.length > 0) && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Network className="h-4 w-4 text-emerald-500" />
-              技能社区上下文
-            </CardTitle>
-            <p className="text-xs text-muted-foreground">
-              基于知识图谱社区检测，识别候选人和职位各自的技能聚类
-            </p>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {community.resumeCommunities.length > 0 && (
-                <div>
-                  <p className="text-sm font-medium mb-2">候选人技能社区 ({community.resumeCommunities.length})</p>
-                  <div className="space-y-2">
-                    {community.resumeCommunities.map((c, i) => (
-                      <div key={i} className="rounded-lg bg-muted/50 p-3">
-                        <p className="text-sm font-medium">{c.title}</p>
-                        <p className="text-xs text-muted-foreground mt-1">{c.summary}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {community.jobCommunities.length > 0 && (
-                <div>
-                  <p className="text-sm font-medium mb-2">职位技能社区 ({community.jobCommunities.length})</p>
-                  <div className="space-y-2">
-                    {community.jobCommunities.map((c, i) => (
-                      <div key={i} className="rounded-lg bg-muted/50 p-3">
-                        <p className="text-sm font-medium">{c.title}</p>
-                        <p className="text-xs text-muted-foreground mt-1">{c.summary}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            {community.domainOverlap.length > 0 && (
-              <div className="mt-3 flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">领域重叠:</span>
-                {community.domainOverlap.map((d, i) => (
-                  <Badge key={i} variant="outline" className="text-[10px]">{d}</Badge>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ═══════════════════════════════════════════════════════ */}
       {/* Skill Match Details                                      */}
       {/* ═══════════════════════════════════════════════════════ */}
       {match.matchDetails && match.matchDetails.length > 0 && (
@@ -494,7 +446,6 @@ export function MatchingResult() {
               jobSkills={effectiveJobSkills}
               matchedSkillIds={match.matchDetails?.filter((d) => d.skillId > 0).map((d) => d.skillId)}
               matchedPairs={match.matchDetails?.map((d) => ({ resumeSkillId: d.resumeSkillId, jobSkillId: d.jobSkillId }))}
-              coocEdges={coocEdges}
             />
           </CardContent>
         </Card>

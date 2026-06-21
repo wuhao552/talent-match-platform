@@ -101,8 +101,8 @@ export function Recommend() {
                           : (result.candidateName || '未知候选人')}
                       </CardTitle>
                       {hasLlm && (
-                        <Badge variant="outline" className="text-[9px] shrink-0 px-1 py-0 border-purple-300 text-purple-600 dark:text-purple-400">
-                          <Brain className="h-2.5 w-2.5 mr-0.5" />GraphRAG
+                        <Badge variant="outline" className="text-[9px] shrink-0 px-1 py-0">
+                          <Brain className="h-2.5 w-2.5 mr-0.5" />深度匹配
                         </Badge>
                       )}
                     </div>
@@ -117,7 +117,7 @@ export function Recommend() {
                     score={result.overallScore}
                     bonusInfo={
                       hasLlm
-                        ? `GraphRAG ${result.scoreBreakdown!.llmScore.toFixed(0)}分`
+                        ? `LLM ${result.scoreBreakdown!.llmScore.toFixed(0)}分`
                         : undefined
                     }
                   />

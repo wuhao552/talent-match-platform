@@ -94,16 +94,10 @@ export const documentApi = {
     request<ApiResponse<DocumentSkill[]>>(`/documents/skills/batch?${ids.map((id) => `ids=${encodeURIComponent(id)}`).join('&')}`),
 }
 
-// Graph
+// Graph — Neo4j dependency removed; graphApi kept as no-op for backward compat
 export const graphApi = {
-  getCooccurrenceBatch: (skillIds: number[]) =>
-    request<ApiResponse<Array<{ sourceId: number; targetId: number; freqSkill: number }>>>(`/graph/cooccurrence-batch`, {
-      method: 'POST', body: JSON.stringify({ skillIds }),
-    }),
-  communityStreamUrl: () => {
-    const token = localStorage.getItem('token') || ''
-    return `${BASE}/graph/community-stream?token=${encodeURIComponent(token)}`
-  },
+  getCooccurrenceBatch: () =>
+    Promise.resolve({ code: 200, message: 'ok', data: [] as Array<{ sourceId: number; targetId: number; freqSkill: number }> }),
 }
 
 // Matching

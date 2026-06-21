@@ -51,7 +51,7 @@ export function JobDetail() {
             {candidates.length > 0 ? ` · ${candidates.length} 位匹配候选人` : ''}
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => navigate(`/graph/${job.id}`)}>
+        <Button variant="outline" size="sm" onClick={() => navigate(`/pipeline/${job.id}`)}>
           <Activity className="mr-1.5 h-3.5 w-3.5" />
           解析过程
         </Button>

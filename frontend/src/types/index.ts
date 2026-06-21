@@ -47,7 +47,7 @@ export interface MatchResult {
   scoreBreakdown?: ScoreBreakdown | null
   matchDetails: MatchDetail[]
   createdAt: string
-  // GraphRAG fields
+  // Matching fields
   algorithmTrace?: AlgorithmStep[]
   llmAssessment?: LlmAssessment
   communityContext?: CommunityContext
@@ -74,9 +74,16 @@ export interface MatchDetail {
 }
 
 export interface ScoreBreakdown {
+  algorithmScore: number
   llmScore: number
   overallScore: number
   matchStatus: 'computed' | 'fallback'
+  algorithmDimensions?: {
+    coverage: number
+    adequacy: number
+    domainOverlap: number
+    transferBonus: number
+  }
 }
 
 export interface AlgorithmStep {

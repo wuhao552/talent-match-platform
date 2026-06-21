@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { useDocuments } from '@/hooks/useDocuments'
 import { documentApi } from '@/services/api'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -20,6 +21,7 @@ interface FileUploadProps {
 export function FileUpload({ mode, docType, requiredRole, title, description }: FileUploadProps) {
   const { user } = useAuth()
   const navigate = useNavigate()
+  const { refresh } = useDocuments()
   const [files, setFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -61,10 +63,12 @@ export function FileUpload({ mode, docType, requiredRole, title, description }: 
     try {
       if (mode === 'single') {
         const res = await documentApi.upload(files[0], docType)
+        refresh()
         toast.success('上传成功，正在解析...')
         navigate(`/pipeline/${res.data.id}`)
       } else {
         await documentApi.uploadBatch(files, docType)
+        refresh()
         toast.success(`成功上传 ${files.length} 个文件，解析中...`)
         navigate('/dashboard')
       }

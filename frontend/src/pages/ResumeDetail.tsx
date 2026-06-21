@@ -48,7 +48,7 @@ export function ResumeDetail() {
             {[structured.title, structured.city, structured.email].filter(Boolean).join(' · ') || '个人简历'}
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => navigate(`/graph/${resume.id}`)}>
+        <Button variant="outline" size="sm" onClick={() => navigate(`/pipeline/${resume.id}`)}>
           <Activity className="mr-1.5 h-3.5 w-3.5" />
           解析过程
         </Button>

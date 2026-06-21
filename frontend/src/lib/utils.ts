@@ -23,6 +23,17 @@ export function scoreColor(score: number) {
   return 'text-red-500'
 }
 
+/**
+ * 返回与分数相匹配的进度条填充色（Tailwind 渐变类）。
+ * 高分偏绿、中等偏蓝、低分偏红，使进度条颜色本身就能传达分数高低。
+ */
+export function scoreBarColor(score: number) {
+  if (score >= 80) return 'from-green-500 to-emerald-400'
+  if (score >= 60) return 'from-sky-500 to-blue-400'
+  if (score >= 40) return 'from-amber-500 to-yellow-400'
+  return 'from-rose-500 to-red-400'
+}
+
 export const proficiencyLabel: Record<string, string> = {
   beginner: '入门', intermediate: '熟悉', advanced: '熟练', expert: '精通',
 }
