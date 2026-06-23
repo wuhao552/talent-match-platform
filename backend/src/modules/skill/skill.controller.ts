@@ -22,17 +22,4 @@ export class SkillController {
     const data = await this.skillService.findById(parseInt(id));
     return { code: 200, message: 'ok', data };
   }
-
-  @Get(':id/related')
-  async getRelated() {
-    const ids = await this.skillService.getRelatedSkills()
-    const data = await this.skillService.findByIds(ids)
-    return { code: 200, message: 'ok', data }
-  }
-
-  @Get(':id/frequency')
-  async getFrequency() {
-    const data = await this.skillService.getFrequency()
-    return { code: 200, message: 'ok', data }
-  }
 }

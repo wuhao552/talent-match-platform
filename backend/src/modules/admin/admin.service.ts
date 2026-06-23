@@ -273,14 +273,9 @@ export class AdminService {
       pageSize = 20,
       search,
       category,
-      hasStructuralBreak,
-      isLowFrequency,
     } = query;
     const where: Record<string, unknown> = {};
     if (category) where.category = category;
-    if (hasStructuralBreak !== undefined)
-      where.hasStructuralBreak = hasStructuralBreak;
-    if (isLowFrequency !== undefined) where.isLowFrequency = isLowFrequency;
     const [items, total] = await this.skillRepo.findAndCount({
       where: search ? [{ ...where, name: ILike(`%${search}%`) }] : where,
       order: { id: 'ASC' },

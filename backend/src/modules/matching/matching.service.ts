@@ -1,18 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository, In, IsNull } from 'typeorm';
 import {
   MatchResult,
   MatchDetail,
   ScoreBreakdown,
   AlgorithmStep,
   LlmAssessment,
-  CommunityContext,
 } from './match-result.entity';
 import { Document } from '../document/document.entity';
 import { DocumentSkill } from '../skill/document-skill.entity';
 import { Skill } from '../skill/skill.entity';
-import { SkillSimilarityService } from '../skill/skill-similarity.service';
 import { User } from '../user/user.entity';
 import { LlmMatchingService } from './llm-matching.service';
 import { EmbeddingService } from '../llm/embedding.service';
@@ -26,7 +24,6 @@ export interface EnrichedMatch {
   matchDetails: MatchDetail[];
   algorithmTrace?: AlgorithmStep[] | null;
   llmAssessment?: LlmAssessment | null;
-  communityContext?: CommunityContext | null;
   createdAt: Date;
   resumeDocId: string;
   resumeFilename: string;
@@ -59,7 +56,6 @@ export class MatchingService {
     @InjectRepository(DocumentSkill) private dsRepo: Repository<DocumentSkill>,
     @InjectRepository(User) private userRepo: Repository<User>,
     @InjectRepository(Skill) private skillRepo: Repository<Skill>,
-    private skillSimilarity: SkillSimilarityService,
     private llmMatching: LlmMatchingService,
     private embeddingService: EmbeddingService,
   ) {}
@@ -90,7 +86,6 @@ export class MatchingService {
           matchDetails: [],
           algorithmTrace: null,
           llmAssessment: null,
-          communityContext: null,
           scoreBreakdown: {
             algorithmScore: 0,
             llmScore: 0,
@@ -158,9 +153,9 @@ export class MatchingService {
     for (const ds of jobSkills) allSkillIds.add(ds.skillId);
     skillMetaMap = new Map<number, Skill>();
     if (allSkillIds.size > 0) {
-      const skillEntities = await this.skillRepo.findBy(
-        [...allSkillIds].map((id) => ({ id })),
-      );
+      const skillEntities = await this.skillRepo.findBy({
+        id: In([...allSkillIds]),
+      });
       for (const s of skillEntities) skillMetaMap.set(s.id, s);
     }
     if (resumeDoc)
@@ -222,21 +217,17 @@ export class MatchingService {
       let best: { rs: DocumentSkill; sim: number } | null = null;
       for (const rs of resumeRemaining) {
         if (usedFuzzyResume.has(rs.skillId)) continue;
-        let sim = this.skillSimilarity.getSimilarity(
-          jobSkill.skillId,
-          rs.skillId,
-        );
-        if (
-          sim === 0 &&
-          this.skillSimilarity.sameCommunity(jobSkill.skillId, rs.skillId)
-        )
-          sim = 0.3;
-        if (sim === 0)
-          sim = this.nameSimilarity(
+        // embedding 语义相似度
+        let sim = 0;
+        try {
+          sim = await this.embeddingService.semanticSimilarity(
             jobSkill.skillName || '',
             rs.skillName || '',
           );
-        if (sim >= 0.4 && (!best || sim > best.sim)) best = { rs, sim };
+        } catch {
+          // embedding API 失败时，保持 sim = 0
+        }
+        if (sim >= 0.5 && (!best || sim > best.sim)) best = { rs, sim };
       }
       if (best) {
         usedFuzzyResume.add(best.rs.skillId);
@@ -283,7 +274,6 @@ export class MatchingService {
       jobSkills,
     );
     let llmAssessment: LlmAssessment | null = null;
-    let communityContext: CommunityContext | null = null;
     try {
       const llmResult = await this.llmMatching.assessMatchStream(
         {
@@ -306,7 +296,6 @@ export class MatchingService {
         onPrompt,
       );
       llmAssessment = llmResult.assessment;
-      communityContext = llmResult.communityContext;
       trace.push(llmResult.step);
     } catch (err) {
       onProgress({
@@ -354,7 +343,6 @@ export class MatchingService {
       scoreBreakdown,
       algorithmTrace: trace,
       llmAssessment,
-      communityContext,
     };
 
     let match = await this.matchRepo.findOne({
@@ -467,9 +455,9 @@ export class MatchingService {
     const allSkillIds = new Set(allDocSkills.map((s) => s.skillId));
     const skillMetaMap = new Map<number, Skill>();
     if (allSkillIds.size > 0) {
-      const entities = await this.skillRepo.findBy(
-        [...allSkillIds].map((id) => ({ id })),
-      );
+      const entities = await this.skillRepo.findBy({
+        id: In([...allSkillIds]),
+      });
       for (const s of entities) skillMetaMap.set(s.id, s);
     }
     const userMap = new Map(allUsers.map((u) => [u.id, u]));
@@ -594,7 +582,6 @@ export class MatchingService {
       const p = pairsData[i];
       const llmResult = llmResults[i];
       const llmAssessment = llmResult?.assessment || null;
-      const communityContext = llmResult?.communityContext || null;
 
       const algoResult = this.calculateAlgorithmScore(
         p.matchDetails,
@@ -642,7 +629,6 @@ export class MatchingService {
         scoreBreakdown,
         algorithmTrace: trace,
         llmAssessment,
-        communityContext,
       };
 
       let match = await this.matchRepo.findOne({
@@ -717,9 +703,9 @@ export class MatchingService {
       for (const ds of jobSkills) allSkillIds.add(ds.skillId);
       skillMetaMap = new Map<number, Skill>();
       if (allSkillIds.size > 0) {
-        const skillEntities = await this.skillRepo.findBy(
-          [...allSkillIds].map((id) => ({ id })),
-        );
+        const skillEntities = await this.skillRepo.findBy({
+          id: In([...allSkillIds]),
+        });
         for (const s of skillEntities) skillMetaMap.set(s.id, s);
       }
       if (resumeDoc)
@@ -783,21 +769,17 @@ export class MatchingService {
       let best: { rs: DocumentSkill; sim: number } | null = null;
       for (const rs of resumeRemaining) {
         if (usedFuzzyResume.has(rs.skillId)) continue;
-        let sim = this.skillSimilarity.getSimilarity(
-          jobSkill.skillId,
-          rs.skillId,
-        );
-        if (
-          sim === 0 &&
-          this.skillSimilarity.sameCommunity(jobSkill.skillId, rs.skillId)
-        )
-          sim = 0.3;
-        if (sim === 0)
-          sim = this.nameSimilarity(
+        // embedding 语义相似度
+        let sim = 0;
+        try {
+          sim = await this.embeddingService.semanticSimilarity(
             jobSkill.skillName || '',
             rs.skillName || '',
           );
-        if (sim >= 0.4 && (!best || sim > best.sim)) best = { rs, sim };
+        } catch {
+          // embedding API 失败时，保持 sim = 0
+        }
+        if (sim >= 0.5 && (!best || sim > best.sim)) best = { rs, sim };
       }
       if (best) {
         usedFuzzyResume.add(best.rs.skillId);
@@ -835,7 +817,6 @@ export class MatchingService {
       jobSkills,
     );
     let llmAssessment: LlmAssessment | null = null;
-    let communityContext: CommunityContext | null = null;
 
     try {
       const llmResult = await this.llmMatching.assessMatch({
@@ -853,7 +834,6 @@ export class MatchingService {
         })),
       });
       llmAssessment = llmResult.assessment;
-      communityContext = llmResult.communityContext;
       trace.push(llmResult.step);
     } catch (err) {
       console.error(
@@ -912,7 +892,6 @@ export class MatchingService {
       scoreBreakdown,
       algorithmTrace: trace,
       llmAssessment,
-      communityContext,
     };
 
     const match = await this.matchRepo.findOne({
@@ -1014,8 +993,6 @@ export class MatchingService {
       dimensions: {
         coverage: number;
         adequacy: number;
-        domainOverlap: number;
-        transferBonus: number;
       };
     }>
   > {
@@ -1045,8 +1022,6 @@ export class MatchingService {
       dimensions: {
         coverage: number;
         adequacy: number;
-        domainOverlap: number;
-        transferBonus: number;
       };
     }> = [];
 
@@ -1113,9 +1088,9 @@ export class MatchingService {
     const allSkillIds = new Set(allSkills.map((s) => s.skillId));
     const skillMetaMap = new Map<number, Skill>();
     if (allSkillIds.size > 0) {
-      const entities = await this.skillRepo.findBy(
-        [...allSkillIds].map((id) => ({ id })),
-      );
+      const entities = await this.skillRepo.findBy({
+        id: In([...allSkillIds]),
+      });
       for (const s of entities) skillMetaMap.set(s.id, s);
     }
     return {
@@ -1178,6 +1153,54 @@ export class MatchingService {
       .execute();
   }
 
+  /**
+   * 文档解析完成后自动触发匹配：算法预筛 Top-K → LLM 深度评估。
+   * 跳过已有非 stale 结果的文档对，避免重复计算。
+   * 包含延迟重试机制：批量上传时，对方文档可能还在解析中，
+   * 延迟后重试可以等到对方文档就绪。
+   */
+  async autoMatchAfterParse(docId: string, retryCount = 0): Promise<void> {
+    const doc = await this.docRepo.findOne({ where: { id: docId } });
+    if (!doc || doc.status !== 'parsed') return;
+
+    const TOP_K = 3;
+    const scored = await this.getTopKByAlgorithmScore(docId, TOP_K);
+
+    // 如果没有候选且还有重试次数，延迟后重试（等待同批文档解析完成）
+    if (scored.length === 0 && retryCount < 3) {
+      const delay = (retryCount + 1) * 5000; // 5s, 10s, 15s
+      console.log(
+        `[AutoMatch] No candidates for ${docId.slice(0, 8)}, retry ${retryCount + 1}/3 in ${delay / 1000}s`,
+      );
+      await new Promise((r) => setTimeout(r, delay));
+      return this.autoMatchAfterParse(docId, retryCount + 1);
+    }
+
+    if (scored.length === 0) return;
+
+    const isResume = doc.docType === 'resume';
+
+    for (const s of scored) {
+      const resumeId = isResume ? docId : s.doc.id;
+      const jobId = isResume ? s.doc.id : docId;
+
+      // 跳过已有有效结果的文档对
+      const existing = await this.matchRepo.findOne({
+        where: { resumeDocId: resumeId, jobDocId: jobId, staleAt: IsNull() },
+      });
+      if (existing) continue;
+
+      try {
+        await this.calculateMatch(resumeId, jobId);
+      } catch (err) {
+        console.error(
+          `[AutoMatch] FAILED resume=${resumeId?.slice(0, 8)} job=${jobId?.slice(0, 8)}:`,
+          (err as Error).message,
+        );
+      }
+    }
+  }
+
   // ══════════════════════════════════════════════════════════════
   //  Enrichment
   // ══════════════════════════════════════════════════════════════
@@ -1224,7 +1247,6 @@ export class MatchingService {
           matchDetails: r.matchDetails,
           algorithmTrace: r.algorithmTrace,
           llmAssessment: r.llmAssessment,
-          communityContext: r.communityContext,
           createdAt: r.createdAt,
           resumeDocId: r.resumeDocId,
           resumeFilename: resumeDoc.originalFilename,
@@ -1264,18 +1286,12 @@ export class MatchingService {
     advanced: 3,
     expert: 4,
   };
-  private static readonly IMPORTANCE_WEIGHT: Record<string, number> = {
-    required: 1.0,
-    preferred: 0.6,
-    optional: 0.3,
-  };
 
   /**
-   * 计算算法技能匹配分（四维度）。
-   * coverage(40%): 加权技能覆盖率
-   * adequacy(30%): 熟练度达标率
-   * domainOverlap(20%): 技能社区领域重叠
-   * transferBonus(10%): 模糊匹配加成
+   * 计算算法技能匹配分（双维度）。
+   *
+   * coverage(60%): 技能覆盖率 — 岗位技能被匹配的比例
+   * adequacy(40%): 熟练度达标率 — 匹配项的熟练度是否达标
    */
   calculateAlgorithmScore(
     matchDetails: MatchDetail[],
@@ -1286,84 +1302,44 @@ export class MatchingService {
     dimensions: {
       coverage: number;
       adequacy: number;
-      domainOverlap: number;
-      transferBonus: number;
     };
   } {
-    // ── 维度一：技能覆盖率 (50%) ──
-    let weightedMatched = 0;
-    let weightedTotal = 0;
+    // ── 维度一：技能覆盖率 (60%) ──
+    // 每个岗位技能等权，精确匹配计1.0，模糊匹配计相似度
+    let coverageSum = 0;
     for (const js of jobSkills) {
-      const importance = this.inferImportance(js.proficiency);
-      const weight = MatchingService.IMPORTANCE_WEIGHT[importance] ?? 0.3;
-      weightedTotal += weight;
-
       const detail = matchDetails.find((d) => d.jobSkillId === js.skillId);
       if (detail) {
-        if (detail.skillId > 0) {
-          weightedMatched += weight * 1.0; // ID 精确匹配
-        } else {
-          const sim = Math.abs(detail.skillId) / 100; // 模糊匹配相似度
-          weightedMatched += weight * sim;
-        }
+        coverageSum += detail.skillId > 0
+          ? 1.0
+          : Math.abs(detail.skillId) / 100;
       }
     }
-    const coverage = weightedTotal > 0 ? weightedMatched / weightedTotal : 0;
+    const coverage = jobSkills.length > 0 ? coverageSum / jobSkills.length : 0;
 
-    // ── 维度二：熟练度达标率 (35%) ──
-    // 当 proficiency 为 unknown 时，用 coverage 近似，避免该维度恒为 0
+    // ── 维度二：熟练度达标率 (40%) ──
+    // 对每对匹配，计算候选人级别/岗位要求级别，上限1.0
+    // unknown 默认 intermediate(2)，避免该维度失效
     let adequacySum = 0;
     let adequacyCount = 0;
     for (const d of matchDetails) {
       const candLevel =
-        MatchingService.PROFICIENCY_LEVEL[d.personProficiency] ?? 0;
-      const reqLevel = MatchingService.PROFICIENCY_LEVEL[d.jobRequirement] ?? 0;
-      if (candLevel > 0 && reqLevel > 0) {
-        adequacySum += Math.min(1.0, candLevel / reqLevel);
-        adequacyCount++;
-      }
+        MatchingService.PROFICIENCY_LEVEL[d.personProficiency] ?? 2;
+      const reqLevel =
+        MatchingService.PROFICIENCY_LEVEL[d.jobRequirement] ?? 2;
+      adequacySum += Math.min(1.0, candLevel / reqLevel);
+      adequacyCount++;
     }
     const adequacy = adequacyCount > 0 ? adequacySum / adequacyCount : coverage;
 
-    // ── 维度三：领域重叠度 (已废弃，Neo4j移除后恒为0，保留计算供前端兼容) ──
-    const jobCommunities = new Set<number>();
-    const resumeCommunities = new Set<number>();
-    for (const js of jobSkills) {
-      const c = this.skillSimilarity.getCommunity(js.skillId);
-      if (c !== -1) jobCommunities.add(c);
-    }
-    for (const rs of resumeSkills) {
-      const c = this.skillSimilarity.getCommunity(rs.skillId);
-      if (c !== -1) resumeCommunities.add(c);
-    }
-    let overlap = 0;
-    for (const c of jobCommunities) {
-      if (resumeCommunities.has(c)) overlap++;
-    }
-    const domainOverlap =
-      jobCommunities.size > 0 ? overlap / jobCommunities.size : 0;
-
-    // ── 维度四：模糊匹配加成 (15%) ──
-    const fuzzyMatches = matchDetails.filter((d) => d.skillId < 0);
-    let transferBonus = 0;
-    if (fuzzyMatches.length > 0 && jobSkills.length > 0) {
-      const avgSim =
-        fuzzyMatches.reduce((sum, d) => sum + Math.abs(d.skillId) / 100, 0) /
-        fuzzyMatches.length;
-      transferBonus = avgSim * (fuzzyMatches.length / jobSkills.length);
-    }
-
-    // 权重重分配：domainOverlap 恒为 0，权重转移给 coverage 和 transferBonus
-    const score =
-      (coverage * 0.5 + adequacy * 0.35 + transferBonus * 0.15) * 100;
+    // ── 加权求和 ──
+    const score = (coverage * 0.6 + adequacy * 0.4) * 100;
 
     return {
       score: Math.round(score * 10) / 10,
       dimensions: {
         coverage: Math.round(coverage * 100) / 100,
         adequacy: Math.round(adequacy * 100) / 100,
-        domainOverlap: Math.round(domainOverlap * 100) / 100,
-        transferBonus: Math.round(transferBonus * 100) / 100,
       },
     };
   }
@@ -1426,7 +1402,7 @@ export class MatchingService {
       }
     }
 
-    // Fuzzy matching
+    // Fuzzy matching: 预计算矩阵查表 → embedding 语义相似度
     const resumeRemaining = resumeSkills.filter(
       (s) => !usedResumeSkillIds.has(s.skillId),
     );
@@ -1439,32 +1415,17 @@ export class MatchingService {
       let best: { rs: DocumentSkill; sim: number } | null = null;
       for (const rs of resumeRemaining) {
         if (usedFuzzyResume.has(rs.skillId)) continue;
-        let sim = this.skillSimilarity.getSimilarity(
-          jobSkill.skillId,
-          rs.skillId,
-        );
-        if (
-          sim === 0 &&
-          this.skillSimilarity.sameCommunity(jobSkill.skillId, rs.skillId)
-        )
-          sim = 0.3;
-        if (sim === 0)
-          sim = this.nameSimilarity(
+        // embedding 语义相似度
+        let sim = 0;
+        try {
+          sim = await this.embeddingService.semanticSimilarity(
             jobSkill.skillName || '',
             rs.skillName || '',
           );
-        // embedding 语义兜底：当字符串匹配失败时，用向量相似度
-        if (sim === 0) {
-          try {
-            sim = await this.embeddingService.semanticSimilarity(
-              jobSkill.skillName || '',
-              rs.skillName || '',
-            );
-          } catch {
-            // embedding API 失败时，保持 sim = 0
-          }
+        } catch {
+          // embedding API 失败时，保持 sim = 0
         }
-        if (sim >= 0.4 && (!best || sim > best.sim)) best = { rs, sim };
+        if (sim >= 0.5 && (!best || sim > best.sim)) best = { rs, sim };
       }
       if (best) {
         usedFuzzyResume.add(best.rs.skillId);
@@ -1485,78 +1446,4 @@ export class MatchingService {
     return matchDetails;
   }
 
-  private nameSimilarity(a: string, b: string): number {
-    const al = this.normalizeSkillName(a),
-      bl = this.normalizeSkillName(b);
-    if (!al || !bl) return 0;
-    if (al === bl) return 1.0;
-    if (al.includes(bl) || bl.includes(al))
-      return (
-        0.75 +
-        (Math.min(al.length, bl.length) / Math.max(al.length, bl.length)) * 0.25
-      );
-    const maxLen = Math.max(al.length, bl.length);
-    const sim = 1 - this.levenshtein(al, bl) / maxLen;
-    return maxLen < 5 ? (sim >= 0.8 ? sim : 0) : sim >= 0.6 ? sim : 0;
-  }
-
-  private normalizeSkillName(name: string): string {
-    let s = name
-      .toLowerCase()
-      .replace(/\.(js|ts|jsx|tsx|py|java|go|rb|cs|swift|kt|rs|cpp|c)$/i, '')
-      .replace(/[^a-z0-9一-鿿+#.]/g, '');
-    for (const suffix of [
-      '系统开发',
-      '开发',
-      '设计',
-      '框架',
-      '技术',
-      '平台',
-      '工具',
-      '应用',
-      '编程',
-      '语言',
-      '算法',
-      '模型',
-      '架构',
-      '服务',
-      '组件',
-      '引擎',
-      '系统',
-      '方案',
-      '流程',
-      '管理',
-      '分析',
-      '测试',
-      '部署',
-      '优化',
-      '配置',
-      '实现',
-      '封装',
-    ]) {
-      if (s.endsWith(suffix) && s.length > suffix.length + 1) {
-        s = s.slice(0, -suffix.length);
-        break;
-      }
-    }
-    return s;
-  }
-
-  private levenshtein(a: string, b: string): number {
-    const m = a.length,
-      n = b.length;
-    let prev = Array.from({ length: n + 1 }, (_, j) => j),
-      curr = new Array(n + 1);
-    for (let i = 1; i <= m; i++) {
-      curr[0] = i;
-      for (let j = 1; j <= n; j++)
-        curr[j] = Math.min(
-          prev[j] + 1,
-          curr[j - 1] + 1,
-          prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
-        );
-      [prev, curr] = [curr, prev];
-    }
-    return prev[n];
-  }
 }

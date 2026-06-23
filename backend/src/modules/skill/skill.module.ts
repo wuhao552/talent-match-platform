@@ -5,7 +5,6 @@ import { SkillController } from './skill.controller';
 import { SkillService } from './skill.service';
 import { SkillSeedService } from './skill-seed.service';
 import { SkillMatcherService } from './skill-matcher.service';
-import { SkillSimilarityService } from './skill-similarity.service';
 import { GraphModule } from '../graph/graph.module';
 import { LlmModule } from '../llm/llm.module';
 
@@ -20,13 +19,10 @@ import { LlmModule } from '../llm/llm.module';
     SkillService,
     SkillSeedService,
     SkillMatcherService,
-    SkillSimilarityService,
   ],
   exports: [
     SkillService,
-    SkillSeedService,
     SkillMatcherService,
-    SkillSimilarityService,
   ],
 })
 export class SkillModule {}

@@ -63,9 +63,6 @@ export class MatchResult {
   @Column({ name: 'llm_assessment', type: 'jsonb', nullable: true })
   llmAssessment: LlmAssessment | null;
 
-  @Column({ name: 'community_context', type: 'jsonb', nullable: true })
-  communityContext: CommunityContext | null;
-
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }
@@ -87,10 +84,8 @@ export interface ScoreBreakdown {
   matchStatus: 'computed' | 'fallback';
   algorithmDimensions?: {
     // 算法分维度拆解
-    coverage: number; // 技能覆盖率
-    adequacy: number; // 熟练度达标率
-    domainOverlap: number; // 领域重叠度
-    transferBonus: number; // 模糊匹配加成
+    coverage: number; // 技能覆盖率 (60%)
+    adequacy: number; // 熟练度达标率 (40%)
   };
 }
 
@@ -118,19 +113,4 @@ export interface LlmAssessment {
   readinessMonths: number; // 0-12
   confidence: number; // 0.0-1.0
   reasoning: string;
-}
-
-/** Community context used during matching */
-export interface CommunityContext {
-  resumeCommunities: Array<{
-    title: string;
-    summary: string;
-    skillDomain: string;
-  }>;
-  jobCommunities: Array<{
-    title: string;
-    summary: string;
-    skillDomain: string;
-  }>;
-  domainOverlap: string[];
 }

@@ -1,91 +1,68 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { SkillSeedService } from './skill-seed.service';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Skill } from './skill.entity';
+import { normalize, stripSuffixes } from './skill.utils';
 
 export interface MatchLog {
   extracted: string;
   canonical: string | null;
   confidence: number;
-  method: 'exact' | 'contains' | 'edit-distance' | 'llm';
+  method: 'exact' | 'contains' | 'edit-distance';
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) => [i]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+  }
+  return dp[m][n];
 }
 
 interface SkillEntry {
   id: number;
   name: string;
-  lower: string;
-  core: string; // normalized with common suffixes stripped
-}
-
-// Common Chinese tech suffixes that don't change skill identity
-const SKILL_SUFFIXES = [
-  '系统开发',
-  '开发',
-  '设计',
-  '框架',
-  '技术',
-  '平台',
-  '工具',
-  '应用',
-  '编程',
-  '语言',
-  '算法',
-  '模型',
-  '架构',
-  '服务',
-  '组件',
-  '引擎',
-  '系统',
-  '方案',
-  '流程',
-  '管理',
-  '分析',
-  '测试',
-  '部署',
-  '优化',
-  '配置',
-  '实现',
-  '封装',
-];
-
-function normalize(name: string): string {
-  return name.toLowerCase().replace(/[-\s\.\/]/g, '');
-}
-
-function stripSuffixes(s: string): string {
-  let result = s;
-  // Sort suffixes by length descending so longer matches are tried first
-  const sorted = [...SKILL_SUFFIXES].sort((a, b) => b.length - a.length);
-  for (const suffix of sorted) {
-    if (result.endsWith(suffix) && result.length > suffix.length + 1) {
-      result = result.slice(0, -suffix.length);
-      break; // only strip one suffix
-    }
-  }
-  return result;
+  core: string;
 }
 
 @Injectable()
 export class SkillMatcherService implements OnModuleInit {
   private skills: SkillEntry[] = [];
-  // 2-gram 倒排索引：ngram → skill index[]
+  // 2-gram inverted index: ngram → skill index[]
   private ngramIndex = new Map<string, number[]>();
 
-  constructor(private seedService: SkillSeedService) {}
+  constructor(
+    @InjectRepository(Skill) private skillRepo: Repository<Skill>,
+  ) {}
 
   async onModuleInit() {
-    const names = this.seedService.getSkillList();
-    this.skills = names.map((name, i) => {
-      const lower = normalize(name);
-      const core = stripSuffixes(lower);
-      return { id: i, name, lower, core };
+    // Load skills from database instead of file
+    const rows = await this.skillRepo.find({
+      select: ['id', 'name', 'coreName'],
     });
+    this.skills = rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      core: r.coreName || stripSuffixes(normalize(r.name || '')),
+    }));
     this.buildNgramIndex();
+
     if (this.skills.length === 0) {
       console.log(
-        `[SkillMatcher] Starting with empty index (no skill.list). Skills will be added dynamically as documents are parsed.`,
+        `[SkillMatcher] No skills in database. Skills will be added dynamically as documents are parsed.`,
       );
     } else {
       console.log(
-        `[SkillMatcher] Indexed ${this.skills.length} skills (${this.ngramIndex.size} ngrams) for matching`,
+        `[SkillMatcher] Indexed ${this.skills.length} skills (${this.ngramIndex.size} ngrams) from database`,
       );
     }
   }
@@ -121,8 +98,7 @@ export class SkillMatcherService implements OnModuleInit {
 
   /**
    * Find the best matching canonical skill ID for an LLM-extracted name.
-   * Returns { id, name, confidence } or null if no good match.
-   * Also returns a log entry describing the matching method used.
+   * Loads skills from database on startup, uses in-memory n-gram index + edit distance.
    */
   async match(name: string): Promise<{
     result: { id: number; name: string; confidence: number } | null;
@@ -140,7 +116,6 @@ export class SkillMatcherService implements OnModuleInit {
       };
     }
 
-    // When index is empty (no skill.list), nothing to match — caller will handle dynamic creation
     if (this.skills.length === 0) {
       return {
         result: null,
@@ -156,9 +131,10 @@ export class SkillMatcherService implements OnModuleInit {
     const q = normalize(name.trim());
     const qCore = stripSuffixes(q);
 
-    // 1. Exact match on raw normalized
+    // 1. Exact match on normalized name or core
     for (const s of this.skills) {
-      if (s.lower === q || s.lower === qCore || s.core === qCore) {
+      const lower = normalize(s.name);
+      if (lower === q || lower === qCore || s.core === qCore) {
         return {
           result: { id: s.id, name: s.name, confidence: 1.0 },
           log: {
@@ -171,13 +147,14 @@ export class SkillMatcherService implements OnModuleInit {
       }
     }
 
-    // 2. Contains match (LLM name is substring of canonical, or vice versa)
+    // 2. Contains match (bidirectional)
     for (const s of this.skills) {
+      const lower = normalize(s.name);
       if (
-        s.lower.includes(q) ||
-        q.includes(s.lower) ||
-        s.lower.includes(qCore) ||
-        qCore.includes(s.lower) ||
+        lower.includes(q) ||
+        q.includes(lower) ||
+        lower.includes(qCore) ||
+        qCore.includes(lower) ||
         s.core.includes(qCore) ||
         qCore.includes(s.core)
       ) {
@@ -199,7 +176,7 @@ export class SkillMatcherService implements OnModuleInit {
       const candidates = this.getNgramCandidates(qCore, 30);
       for (const s of candidates) {
         const maxLen = Math.max(s.core.length, qCore.length);
-        const dist = this.levenshtein(qCore, s.core);
+        const dist = levenshtein(qCore, s.core);
         const sim = 1 - dist / maxLen;
         const threshold =
           qCore.length <= 3 ? 0.9 : qCore.length <= 5 ? 0.75 : 0.7;
@@ -241,22 +218,5 @@ export class SkillMatcherService implements OnModuleInit {
   /** Return all canonical skills with id, name, and category for LLM context. */
   getAllSkills(): { id: number; name: string; category?: string }[] {
     return this.skills.map((s) => ({ id: s.id, name: s.name }));
-  }
-
-  private levenshtein(a: string, b: string): number {
-    const m = a.length;
-    const n = b.length;
-    const dp: number[][] = Array.from({ length: m + 1 }, (_, i) => [i]);
-    for (let j = 0; j <= n; j++) dp[0][j] = j;
-    for (let i = 1; i <= m; i++) {
-      for (let j = 1; j <= n; j++) {
-        dp[i][j] = Math.min(
-          dp[i - 1][j] + 1,
-          dp[i][j - 1] + 1,
-          dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
-        );
-      }
-    }
-    return dp[m][n];
   }
 }

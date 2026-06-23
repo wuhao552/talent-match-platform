@@ -13,6 +13,7 @@ import { MatchingModule } from './modules/matching/matching.module';
 import { LlmModule } from './modules/llm/llm.module';
 import { AgentModule } from './agents/agent.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { AdminModule } from './modules/admin/admin.module';
     LlmModule,
     AgentModule,
     AdminModule,
+    DashboardModule,
   ],
 })
 export class AppModule {}

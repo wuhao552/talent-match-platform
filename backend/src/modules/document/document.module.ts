@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Document } from './document.entity';
@@ -10,7 +10,7 @@ import { DocumentService } from './document.service';
 import { AgentModule } from '../../agents/agent.module';
 import { GraphModule } from '../graph/graph.module';
 import { LlmModule } from '../llm/llm.module';
-import { SkillModule } from '../skill/skill.module';
+import { MatchingModule } from '../matching/matching.module';
 
 @Module({
   imports: [
@@ -21,7 +21,7 @@ import { SkillModule } from '../skill/skill.module';
     AgentModule,
     GraphModule,
     LlmModule,
-    SkillModule,
+    forwardRef(() => MatchingModule),
   ],
   controllers: [DocumentController],
   providers: [DocumentService],

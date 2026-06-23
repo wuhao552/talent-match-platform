@@ -4,10 +4,8 @@ import { DocumentSkill } from '../skill/document-skill.entity';
 import { Skill } from '../skill/skill.entity';
 import { Document } from '../document/document.entity';
 import { User } from '../user/user.entity';
-import { SkillSimilarityService } from '../skill/skill-similarity.service';
 import type {
   LlmAssessment,
-  CommunityContext,
   AlgorithmStep,
 } from './match-result.entity';
 
@@ -15,7 +13,6 @@ import type {
 export class LlmMatchingService {
   constructor(
     private llm: LlmService,
-    private skillSimilarity: SkillSimilarityService,
   ) {}
 
   async assessMatch(params: {
@@ -33,17 +30,11 @@ export class LlmMatchingService {
     }>;
   }): Promise<{
     assessment: LlmAssessment;
-    communityContext: CommunityContext;
     step: AlgorithmStep;
   }> {
     const t0 = Date.now();
 
-    const communityContext = this.buildCommunityContext(
-      params.resumeSkills,
-      params.jobSkills,
-      params.skillMetaMap,
-    );
-    const context = this.buildMixedContext(params, communityContext);
+    const context = this.buildMixedContext(params);
 
     const systemPrompt = `你是一位拥有10年经验的资深猎头顾问和技术人才评估专家。你的任务是对候选人与职位进行**全方位深度匹配评估**。
 
@@ -97,7 +88,6 @@ export class LlmMatchingService {
       };
       return {
         assessment: fallback,
-        communityContext,
         step: {
           phase: 'llm_assessment',
           label: 'LLM 深度评估',
@@ -143,7 +133,6 @@ export class LlmMatchingService {
 
     return {
       assessment,
-      communityContext,
       step: {
         phase: 'llm_assessment',
         label: 'LLM 深度评估',
@@ -193,39 +182,20 @@ export class LlmMatchingService {
     ) => void,
   ): Promise<{
     assessment: LlmAssessment;
-    communityContext: CommunityContext;
     step: AlgorithmStep;
   }> {
     const t0 = Date.now();
 
     onProgress({
-      phase: 'community_context',
-      label: '构建社区上下文',
-      status: 'running',
-      summary: '正在分析技能社区...',
-    });
-    const communityContext = this.buildCommunityContext(
-      params.resumeSkills,
-      params.jobSkills,
-      params.skillMetaMap,
-    );
-    onProgress({
-      phase: 'community_context',
-      label: '构建社区上下文',
-      status: 'done',
-      summary: `候选 ${communityContext.resumeCommunities.length} 个社区, 职位 ${communityContext.jobCommunities.length} 个社区`,
-    });
-
-    onProgress({
       phase: 'context_assembly',
-      label: '组装混合上下文',
+      label: '组装匹配上下文',
       status: 'running',
       summary: '正在组装匹配上下文...',
     });
-    const context = this.buildMixedContext(params, communityContext);
+    const context = this.buildMixedContext(params);
     onProgress({
       phase: 'context_assembly',
-      label: '组装混合上下文',
+      label: '组装匹配上下文',
       status: 'done',
       summary: `上下文长度: ${context.length} 字符`,
     });
@@ -300,7 +270,6 @@ export class LlmMatchingService {
       };
       return {
         assessment: fallback,
-        communityContext,
         step: {
           phase: 'llm_assessment',
           label: 'LLM 深度评估',
@@ -353,7 +322,6 @@ export class LlmMatchingService {
 
     return {
       assessment,
-      communityContext,
       step: {
         phase: 'llm_assessment',
         label: 'LLM 深度评估',
@@ -366,50 +334,6 @@ export class LlmMatchingService {
           reasoning: assessment.reasoning,
         },
       },
-    };
-  }
-
-  private buildCommunityContext(
-    resumeSkills: DocumentSkill[],
-    jobSkills: DocumentSkill[],
-    skillMetaMap: Map<number, Skill>,
-  ): CommunityContext {
-    const groupBy = (skills: DocumentSkill[]) => {
-      const groups = new Map<
-        number,
-        { skills: string[]; categoryCount: Map<string, number> }
-      >();
-      for (const ds of skills) {
-        const cid = this.skillSimilarity.getCommunity(ds.skillId);
-        if (cid === -1) continue;
-        if (!groups.has(cid))
-          groups.set(cid, { skills: [], categoryCount: new Map() });
-        const g = groups.get(cid)!;
-        g.skills.push(ds.skillName || ds.skill?.name || `skill-${ds.skillId}`);
-        const cat = skillMetaMap.get(ds.skillId)?.category;
-        if (cat) g.categoryCount.set(cat, (g.categoryCount.get(cat) ?? 0) + 1);
-      }
-      return [...groups.entries()].map(([id, g]) => {
-        // 社区标签：取出现频率最高的 category
-        const label =
-          g.categoryCount.size > 0
-            ? [...g.categoryCount.entries()].sort((a, b) => b[1] - a[1])[0][0]
-            : '通用技能';
-        return {
-          title: `技能社区 #${id} (${label})`,
-          summary: `${g.skills.length} 个技能: ${g.skills.slice(0, 8).join(', ')}${g.skills.length > 8 ? '...' : ''}`,
-          skillDomain: label,
-        };
-      });
-    };
-    const rc = groupBy(resumeSkills),
-      jc = groupBy(jobSkills);
-    return {
-      resumeCommunities: rc,
-      jobCommunities: jc,
-      domainOverlap: [...new Set(rc.map((c) => c.skillDomain))].filter((d) =>
-        jc.some((c) => c.skillDomain === d),
-      ),
     };
   }
 
@@ -428,28 +352,8 @@ export class LlmMatchingService {
         jobRequirement: string;
       }>;
     },
-    cc: CommunityContext,
   ): string {
     const s: string[] = [];
-
-    // Community context
-    if (cc.resumeCommunities.length > 0 || cc.jobCommunities.length > 0) {
-      s.push('## 技能社区分析');
-      if (cc.resumeCommunities.length > 0) {
-        s.push('### 候选人技能社区');
-        cc.resumeCommunities.forEach((c) =>
-          s.push(`- **${c.title}**: ${c.summary}`),
-        );
-      }
-      if (cc.jobCommunities.length > 0) {
-        s.push('### 职位技能社区');
-        cc.jobCommunities.forEach((c) =>
-          s.push(`- **${c.title}**: ${c.summary}`),
-        );
-      }
-      if (cc.domainOverlap.length > 0)
-        s.push(`### 领域重叠: ${cc.domainOverlap.join(', ')}`);
-    }
 
     // Skill tables
     s.push('## 候选人技能列表');
@@ -584,7 +488,6 @@ export class LlmMatchingService {
   ): Promise<
     Array<{
       assessment: LlmAssessment;
-      communityContext: CommunityContext;
       step: AlgorithmStep;
     }>
   > {
@@ -611,7 +514,6 @@ export class LlmMatchingService {
     // 还原成与入参对齐的结果数组；失败的对回填一个 error step，保持索引一致。
     const results: Array<{
       assessment: LlmAssessment;
-      communityContext: CommunityContext;
       step: AlgorithmStep;
     }> = [];
     for (const r of settled) {
@@ -630,11 +532,6 @@ export class LlmMatchingService {
         };
         results.push({
           assessment: fallback,
-          communityContext: {
-            resumeCommunities: [],
-            jobCommunities: [],
-            domainOverlap: [],
-          },
           step: {
             phase: 'llm_assessment',
             label: 'LLM 深度评估',

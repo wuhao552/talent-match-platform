@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { JwtModule } from '@nestjs/jwt';
 import { MatchResult } from './match-result.entity';
@@ -24,7 +24,7 @@ import { DocumentModule } from '../document/document.module';
     ]),
     SkillModule,
     LlmModule,
-    DocumentModule,
+    forwardRef(() => DocumentModule),
     JwtModule.register({
       secret: process.env.JWT_SECRET || 'talent-match-jwt-secret-key-2026',
       signOptions: { expiresIn: '7d' },

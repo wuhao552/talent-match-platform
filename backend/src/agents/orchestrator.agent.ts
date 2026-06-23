@@ -2,8 +2,6 @@ import { Injectable } from '@nestjs/common';
 import { DocumentParserAgent } from './document-parser.agent';
 import { SkillExtractorAgent } from './skill-extractor.agent';
 import { SkillMatcherService } from '../modules/skill/skill-matcher.service';
-import { SkillService } from '../modules/skill/skill.service';
-import { SkillSimilarityService } from '../modules/skill/skill-similarity.service';
 import type { AgentResult } from './agent.interface';
 
 export interface PipelineStep {
@@ -24,8 +22,6 @@ export class OrchestratorAgent {
     private docParser: DocumentParserAgent,
     private skillExtractor: SkillExtractorAgent,
     private skillMatcher: SkillMatcherService,
-    private skillService: SkillService,
-    private skillSimilarity: SkillSimilarityService,
   ) {}
 
   async runParsePipeline(document: {
@@ -264,26 +260,67 @@ export class OrchestratorAgent {
       method: string;
     }> = [];
 
-    for (const s of extractedSkills) {
+    // ── 逐个匹配并推送进度 ──
+    for (let i = 0; i < extractedSkills.length; i++) {
+      const s = extractedSkills[i];
       const { result: match, log } = await this.skillMatcher.match(s.name);
       matchingLogs.push(log);
 
       if (match) {
-        if (seenSkillIds.has(match.id)) continue;
-        seenSkillIds.add(match.id);
-        mappedSkills.push({
-          skillId: match.id,
-          proficiency: s.proficiency,
-          name: match.name,
-        });
+        if (!seenSkillIds.has(match.id)) {
+          seenSkillIds.add(match.id);
+          mappedSkills.push({
+            skillId: match.id,
+            proficiency: s.proficiency,
+            name: match.name,
+          });
+        }
       }
+
+      // 每完成一个技能的匹配，推送一次进度事件（含详细信息）
+      emit({
+        agent: 'skill_matcher',
+        status: 'running',
+        summary: `[${i + 1}/${extractedSkills.length}] 匹配中...`,
+        data: {
+          current: i + 1,
+          total: extractedSkills.length,
+          matchDetail: {
+            extracted: log.extracted,
+            canonical: log.canonical,
+            confidence: log.confidence,
+            method: log.method,
+            matched: !!match,
+            proficiency: s.proficiency,
+          },
+          logs: [...matchingLogs],
+        },
+        timestamp: Date.now(),
+      });
     }
+
+    // 统计各匹配方法的数量
+    const methodCounts = new Map<string, number>();
+    for (const log of matchingLogs) {
+      methodCounts.set(log.method, (methodCounts.get(log.method) || 0) + 1);
+    }
+    const methodSummary = Object.fromEntries(methodCounts);
 
     emit({
       agent: 'skill_matcher',
       status: 'done',
       summary: `技能匹配完成: ${mappedSkills.length}/${extractedSkills.length} 已匹配`,
-      data: { matched: mappedSkills.length, total: extractedSkills.length },
+      data: {
+        matched: mappedSkills.length,
+        total: extractedSkills.length,
+        logs: matchingLogs,
+        methodSummary,
+        mappedSkills: mappedSkills.map((m) => ({
+          id: m.skillId,
+          name: m.name,
+          proficiency: m.proficiency,
+        })),
+      },
       timestamp: Date.now(),
     });
 

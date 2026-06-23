@@ -57,14 +57,6 @@ export class SkillFilterDto extends PaginationDto {
   @IsOptional()
   @IsString()
   category?: string;
-
-  @IsOptional()
-  @Type(() => Boolean)
-  hasStructuralBreak?: boolean;
-
-  @IsOptional()
-  @Type(() => Boolean)
-  isLowFrequency?: boolean;
 }
 
 export class MatchFilterDto extends PaginationDto {
