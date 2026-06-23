@@ -44,7 +44,7 @@ interface MatchPair {
   result?: MatchResult
   error?: string
   algorithmScore?: number
-  algorithmDimensions?: { coverage: number; adequacy: number; domainOverlap: number; transferBonus: number }
+  algorithmDimensions?: { coverage: number; adequacy: number }
   rank?: number
 }
 
@@ -57,6 +57,152 @@ function StatusIcon({ status }: { status: PipelineStep['status'] }) {
   return <div className="h-4 w-4 rounded-full border-2 border-muted-foreground/20" />
 }
 
+// ── Match Method Label ──
+
+function methodLabel(method: string) {
+  switch (method) {
+    case 'exact': return { label: '精确匹配', color: 'text-green-600 bg-green-50 border-green-200' }
+    case 'contains': return { label: '包含匹配', color: 'text-blue-600 bg-blue-50 border-blue-200' }
+    case 'edit-distance': return { label: '编辑距离', color: 'text-amber-600 bg-amber-50 border-amber-200' }
+    case 'embedding': return { label: '语义匹配', color: 'text-purple-600 bg-purple-50 border-purple-200' }
+    default: return { label: method, color: 'text-muted-foreground bg-muted border-border' }
+  }
+}
+
+// ── Skill Matcher Detail Table ──
+
+function SkillMatcherDetail({ data }: { data: Record<string, unknown> }) {
+  const logs = data.logs as Array<{ extracted: string; canonical: string | null; confidence: number; method: string }> | undefined
+  const methodSummary = data.methodSummary as Record<string, number> | undefined
+  const mappedSkills = data.mappedSkills as Array<{ id: number; name: string; proficiency: string }> | undefined
+
+  if (!logs || logs.length === 0) {
+    // 还在运行中，显示当前匹配项
+    const current = data.current as number | undefined
+    const total = data.total as number | undefined
+    const detail = data.matchDetail as { extracted: string; canonical: string | null; confidence: number; method: string; matched: boolean; proficiency: string } | undefined
+
+    return (
+      <div className="space-y-2">
+        {current != null && total != null && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            <span>正在匹配第 {current}/{total} 个技能</span>
+          </div>
+        )}
+        {detail && (
+          <div className="rounded-md border p-2.5 space-y-1.5 bg-background">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="font-medium">{detail.extracted}</span>
+              <ChevronRight className="h-3 w-3 text-muted-foreground" />
+              <span className={detail.matched ? 'font-medium text-green-600' : 'text-muted-foreground'}>
+                {detail.canonical || '未匹配'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {(() => {
+                const m = methodLabel(detail.method)
+                return <span className={`text-[10px] px-1.5 py-0.5 rounded border ${m.color}`}>{m.label}</span>
+              })()}
+              <span className="text-[10px] text-muted-foreground tabular-nums">
+                置信度 {(detail.confidence * 100).toFixed(0)}%
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // 已完成 — 展示完整匹配表格
+  const matched = logs.filter(l => l.canonical)
+  const unmatched = logs.filter(l => !l.canonical)
+
+  return (
+    <div className="space-y-3">
+      {/* 方法统计 */}
+      {methodSummary && Object.keys(methodSummary).length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {Object.entries(methodSummary).map(([method, count]) => {
+            const m = methodLabel(method)
+            return (
+              <span key={method} className={`text-[10px] px-1.5 py-0.5 rounded border ${m.color}`}>
+                {m.label} × {count as number}
+              </span>
+            )
+          })}
+        </div>
+      )}
+
+      {/* 匹配成功列表 */}
+      {matched.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-medium text-muted-foreground flex items-center gap-1">
+            <CheckCircle2 className="h-3 w-3" />匹配成功 ({matched.length})
+          </p>
+          <div className="rounded-md border overflow-hidden">
+            <table className="w-full text-[10px]">
+              <thead>
+                <tr className="bg-muted/40 border-b">
+                  <th className="px-2 py-1.5 text-left font-medium text-muted-foreground">提取技能</th>
+                  <th className="px-2 py-1.5 text-left font-medium text-muted-foreground">标准技能</th>
+                  <th className="px-2 py-1.5 text-center font-medium text-muted-foreground">方法</th>
+                  <th className="px-2 py-1.5 text-right font-medium text-muted-foreground">置信度</th>
+                </tr>
+              </thead>
+              <tbody>
+                {matched.map((log, i) => {
+                  const m = methodLabel(log.method)
+                  return (
+                    <tr key={i} className={i < matched.length - 1 ? 'border-b border-border/50' : ''}>
+                      <td className="px-2 py-1.5 font-medium">{log.extracted}</td>
+                      <td className="px-2 py-1.5 text-green-600">{log.canonical}</td>
+                      <td className="px-2 py-1.5 text-center">
+                        <span className={`px-1 py-0.5 rounded border ${m.color}`}>{m.label}</span>
+                      </td>
+                      <td className="px-2 py-1.5 text-right tabular-nums">
+                        <span className={log.confidence >= 0.85 ? 'text-green-600' : log.confidence >= 0.7 ? 'text-amber-600' : 'text-muted-foreground'}>
+                          {(log.confidence * 100).toFixed(0)}%
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 未匹配列表 */}
+      {unmatched.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-medium text-muted-foreground flex items-center gap-1">
+            <XCircle className="h-3 w-3" />未匹配 ({unmatched.length})
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {unmatched.map((log, i) => (
+              <Badge key={i} variant="outline" className="text-[10px] text-muted-foreground">{log.extracted}</Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 已映射技能概览 */}
+      {mappedSkills && mappedSkills.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-medium text-muted-foreground">已映射标准技能</p>
+          <div className="flex flex-wrap gap-1.5">
+            {mappedSkills.map((s, i) => (
+              <Badge key={i} variant="secondary" className="text-[10px]">{s.name}</Badge>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Parse Step Component ──
 
 function ParseStep({ step, streamText, expanded, onToggle }: {
@@ -66,6 +212,7 @@ function ParseStep({ step, streamText, expanded, onToggle }: {
   onToggle: () => void
 }) {
   const hasStream = !!(step.status === 'running' && streamText && streamText.length > 0)
+  const isSkillMatcher = (step.phase || step.agent) === 'skill_matcher'
 
   return (
     <div className="border rounded-lg overflow-hidden">
@@ -88,6 +235,9 @@ function ParseStep({ step, streamText, expanded, onToggle }: {
         <div className="border-t bg-muted/20 px-4 py-3 space-y-3">
           <div className="text-xs text-muted-foreground">{String(step.summary || '')}</div>
 
+          {/* Skill Matcher 详细匹配过程 */}
+          {isSkillMatcher && step.data && <SkillMatcherDetail data={step.data} />}
+
           {hasStream ? (
             <div className="relative">
               <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded-md border bg-background p-3 text-[11px] leading-relaxed font-mono">
@@ -96,7 +246,7 @@ function ParseStep({ step, streamText, expanded, onToggle }: {
             </div>
           ) : null}
 
-          {step.status === 'done' && step.data?.rawResponse ? (
+          {step.status === 'done' && step.data?.rawResponse && !isSkillMatcher ? (
             <div className="relative">
               <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded-md border bg-background p-3 text-[11px] leading-relaxed font-mono">
                 {String(step.data.rawResponse)}
@@ -104,7 +254,7 @@ function ParseStep({ step, streamText, expanded, onToggle }: {
             </div>
           ) : null}
 
-          {step.data ? (
+          {step.data && !isSkillMatcher ? (
             <details className="text-xs">
               <summary className="cursor-pointer text-muted-foreground hover:text-foreground">结构化数据</summary>
               <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap rounded-md border bg-background p-3 text-[11px] font-mono">
@@ -448,7 +598,7 @@ function MatchPairDisplay({ pair }: { pair: MatchPair }) {
   // For completed matches loaded from cache (no live steps/llmCalls)
   const isCached = isDone && pair.steps.length === 0 && pair.llmCalls.length === 0
   const cachedAssessment = isCached ? pair.result?.llmAssessment : null
-  const cachedScore = isCached ? pair.result?.overallScore : null
+  const overallScore = pair.result?.overallScore
 
   return (
     <Card>
@@ -466,10 +616,10 @@ function MatchPairDisplay({ pair }: { pair: MatchPair }) {
             </CardTitle>
           </div>
           {/* Score — prominent */}
-          {cachedScore != null ? (
+          {overallScore != null ? (
             <div className="flex items-baseline gap-4 shrink-0">
               <div className="flex items-baseline gap-1">
-                <span className="text-2xl font-bold tabular-nums">{Math.round(cachedScore)}</span>
+                <span className="text-2xl font-bold tabular-nums">{Math.round(overallScore)}</span>
                 <span className="text-xs text-muted-foreground">综合分</span>
               </div>
               {pair.result?.scoreBreakdown && (
@@ -491,7 +641,6 @@ function MatchPairDisplay({ pair }: { pair: MatchPair }) {
           <div className="flex flex-wrap gap-2 mt-1">
             <span className="text-[10px] text-muted-foreground">覆盖率 {Math.round(pair.algorithmDimensions.coverage * 100)}%</span>
             <span className="text-[10px] text-muted-foreground">达标率 {Math.round(pair.algorithmDimensions.adequacy * 100)}%</span>
-            <span className="text-[10px] text-muted-foreground">领域重叠 {Math.round(pair.algorithmDimensions.domainOverlap * 100)}%</span>
           </div>
         )}
       </CardHeader>
@@ -621,9 +770,11 @@ export function PipelineView() {
   const [parseDone, setParseDone] = useState(false)
   const [expandedParseSteps, setExpandedParseSteps] = useState<Set<string>>(new Set())
   const [matchPairs, setMatchPairs] = useState<MatchPair[]>([])
+  const [matchPhaseSteps, setMatchPhaseSteps] = useState<PipelineStep[]>([])
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef(Date.now())
   const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+  const pageBottomRef = useRef<HTMLDivElement>(null)
 
   // Document & skills data (loaded after parse completes)
   const [document, setDocument] = useState<Document | null>(null)
@@ -682,12 +833,71 @@ export function PipelineView() {
               setPhase('done')
               if (timerRef.current) clearInterval(timerRef.current)
             } else {
-              // No existing matches — run match stream (keep alreadyParsed=true to skip parse phase)
+              // No existing matches — autoMatchAfterParse may still be running.
+              // Poll for match results instead of triggering a new SSE stream.
               setPhase('match')
+              let pollCount = 0
+              const pollInterval = setInterval(async () => {
+                if (cancelled) { clearInterval(pollInterval); return }
+                pollCount++
+                try {
+                  const res = isResume
+                    ? await matchingApi.getByResume(id)
+                    : await matchingApi.getByJob(id)
+                  if (res.data.length > 0) {
+                    clearInterval(pollInterval)
+                    setMatchPairs(res.data.map((m) => ({
+                      resumeId: m.resumeDocId, jobId: m.jobDocId,
+                      resumeFilename: m.resumeFilename || '',
+                      jobFilename: m.jobFilename || '',
+                      steps: [], llmCalls: [],
+                      result: m,
+                    })))
+                    setPhase('done')
+                    if (timerRef.current) clearInterval(timerRef.current)
+                  } else if (pollCount >= 24) {
+                    // 24 * 5s = 2min timeout — no matches found
+                    clearInterval(pollInterval)
+                    setPhase('done')
+                    if (timerRef.current) clearInterval(timerRef.current)
+                  }
+                } catch {
+                  // ignore poll errors
+                }
+              }, 5000)
             }
           } catch {
-            // No existing matches — run match stream
+            // No existing matches — poll for results
             setPhase('match')
+            let pollCount = 0
+            const isResume = doc.docType === 'resume'
+            const pollInterval = setInterval(async () => {
+              if (cancelled) { clearInterval(pollInterval); return }
+              pollCount++
+              try {
+                const res = isResume
+                  ? await matchingApi.getByResume(id)
+                  : await matchingApi.getByJob(id)
+                if (res.data.length > 0) {
+                  clearInterval(pollInterval)
+                  setMatchPairs(res.data.map((m) => ({
+                    resumeId: m.resumeDocId, jobId: m.jobDocId,
+                    resumeFilename: m.resumeFilename || '',
+                    jobFilename: m.jobFilename || '',
+                    steps: [], llmCalls: [],
+                    result: m,
+                  })))
+                  setPhase('done')
+                  if (timerRef.current) clearInterval(timerRef.current)
+                } else if (pollCount >= 24) {
+                  clearInterval(pollInterval)
+                  setPhase('done')
+                  if (timerRef.current) clearInterval(timerRef.current)
+                }
+              } catch {
+                // ignore
+              }
+            }, 5000)
           }
         }
       } catch (err) {
@@ -703,6 +913,16 @@ export function PipelineView() {
     timerRef.current = setInterval(() => setElapsed(Date.now() - startRef.current), 100)
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
   }, [])
+
+  // Auto-scroll to bottom when new content appears during processing
+  useEffect(() => {
+    if (phase === 'done') return
+    // Small delay to let React render the new content first
+    const timer = setTimeout(() => {
+      pageBottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    }, 100)
+    return () => clearTimeout(timer)
+  }, [matchPairs.length, matchPhaseSteps.length, parseSteps, phase])
 
   // ── Load document & skills after parse completes ──
   const loadDocAndSkills = useCallback(async () => {
@@ -793,9 +1013,9 @@ export function PipelineView() {
     return () => es.close()
   }, [docId, loadDocAndSkills, alreadyParsed])
 
-  // ── Phase 2: Match Stream ──
+  // ── Phase 2: Match Stream (only for live parsing, not for already-parsed docs) ──
   useEffect(() => {
-    if (phase !== 'match' || !docId) return
+    if (phase !== 'match' || !docId || alreadyParsed) return
 
     const es = new EventSource(matchingApi.streamAllUrl(docId))
 
@@ -817,8 +1037,15 @@ export function PipelineView() {
 
     es.addEventListener('progress', (e) => {
       const step: PipelineStep & { resumeId?: string; jobId?: string } = JSON.parse(e.data)
-      // 批量事件（resumeId/jobId 为空）广播到所有匹配对
+      // 算法预筛等全局步骤（无 resumeId/jobId）记录到 matchPhaseSteps
       if (!step.resumeId && !step.jobId) {
+        setMatchPhaseSteps(prev => {
+          const idx = prev.findIndex(s => s.phase === step.phase)
+          const next = [...prev]
+          if (idx >= 0) next[idx] = step
+          else next.push(step)
+          return next
+        })
         setMatchPairs(prev => prev.map(p => {
           const existing = p.steps.findIndex(s => s.phase === step.phase)
           const steps = [...p.steps]
@@ -861,7 +1088,13 @@ export function PipelineView() {
       const data = JSON.parse(e.data)
       setMatchPairs(prev => prev.map(p => {
         if (p.resumeId !== data.resumeId || p.jobId !== data.jobId) return p
-        return { ...p, llmCalls: p.llmCalls.map(c => ({ ...c, done: true })) }
+        return {
+          ...p,
+          result: data.overallScore != null
+            ? { ...(p.result || {} as any), id: data.matchId || p.result?.id, overallScore: data.overallScore, llmAssessment: { ...(p.result?.llmAssessment || {} as any), confidence: data.confidence } }
+            : p.result,
+          llmCalls: p.llmCalls.map(c => ({ ...c, done: true })),
+        }
       }))
     })
 
@@ -953,12 +1186,14 @@ export function PipelineView() {
           {parseStepList.map(({ phase: p, label }) => {
             const step = parseSteps[p]
             const isStreaming = step?.status === 'running' && parseStream[p] && parseStream[p].length > 0
+            // skill_matcher 有详细进度数据时也自动展开
+            const hasMatcherProgress = p === 'skill_matcher' && step?.status === 'running' && !!step?.data
             return (
               <ParseStep
                 key={p}
                 step={step || { phase: p, label, status: 'pending', summary: '' }}
                 streamText={parseStream[p]}
-                expanded={isStreaming || expandedParseSteps.has(p)}
+                expanded={isStreaming || hasMatcherProgress || expandedParseSteps.has(p)}
                 onToggle={() => setExpandedParseSteps(prev => { const s = new Set(prev); s.has(p) ? s.delete(p) : s.add(p); return s })}
               />
             )
@@ -1019,13 +1254,50 @@ export function PipelineView() {
       )}
 
       {/* Phase 2: Match Pairs */}
-      {matchPairs.length > 0 && (
+      {(phase === 'match' || matchPairs.length > 0) && (
         <div className="space-y-4">
           <div className="flex items-center gap-2">
             <Brain className="h-4 w-4 text-muted-foreground" />
             <h2 className="text-lg font-semibold">阶段二: LLM 匹配评估</h2>
-            <span className="text-xs text-muted-foreground">({matchPairs.length} 对匹配)</span>
+            {matchPairs.length > 0 ? (
+              <span className="text-xs text-muted-foreground">({matchPairs.length} 对匹配)</span>
+            ) : alreadyParsed ? (
+              <Badge variant="secondary" className="text-[10px] animate-pulse">等待自动匹配结果...</Badge>
+            ) : (
+              <Badge variant="secondary" className="text-[10px] animate-pulse">算法预筛中...</Badge>
+            )}
           </div>
+
+          {/* Waiting for auto-match (alreadyParsed with no results yet) */}
+          {alreadyParsed && matchPairs.length === 0 && (
+            <Card>
+              <CardContent className="py-8 text-center">
+                <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground mb-3" />
+                <p className="text-sm font-medium">正在等待自动匹配结果</p>
+                <p className="text-xs text-muted-foreground mt-1">系统正在后台计算匹配，请稍候...</p>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Algorithm pre-filter steps (shown before match pairs arrive) */}
+          {matchPhaseSteps.length > 0 && matchPairs.length === 0 && (
+            <Card>
+              <CardContent className="py-3 space-y-2">
+                {matchPhaseSteps.map(step => (
+                  <div key={step.phase} className="flex items-center gap-2 text-sm">
+                    <StatusIcon status={step.status} />
+                    <span className="font-medium">{step.label || step.phase}</span>
+                    {step.status === 'running' && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                    {step.status === 'done' && step.durationMs != null && (
+                      <span className="text-[10px] text-muted-foreground tabular-nums">{step.durationMs}ms</span>
+                    )}
+                    <span className="text-xs text-muted-foreground">{step.summary}</span>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
           {[...matchPairs]
             .sort((a, b) => {
               const sa = a.result?.scoreBreakdown?.algorithmScore ?? a.algorithmScore ?? 0
@@ -1061,6 +1333,7 @@ export function PipelineView() {
           </CardContent>
         </Card>
       )}
+      <div ref={pageBottomRef} />
     </div>
   )
 }

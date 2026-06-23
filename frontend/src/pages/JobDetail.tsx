@@ -70,12 +70,6 @@ export function JobDetail() {
 
       {summary && <p className="text-sm text-muted-foreground leading-relaxed">{summary}</p>}
 
-      {job.parsedText && (
-        <div>
-          <p className="mb-1.5 text-sm font-medium">原始招聘信息</p>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-muted p-4 text-xs leading-relaxed text-muted-foreground">{job.parsedText}</pre>
-        </div>
-      )}
 
       <h2 className="text-base font-semibold">候选人排名</h2>
       {candidates.length === 0 ? (

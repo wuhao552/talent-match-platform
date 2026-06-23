@@ -256,8 +256,6 @@ export function MatchingResult() {
         const dimItems = dims ? [
           { label: '覆盖率', value: dims.coverage },
           { label: '达标率', value: dims.adequacy },
-          { label: '领域重叠', value: dims.domainOverlap },
-          { label: '模糊加成', value: dims.transferBonus },
         ] : []
 
         return (

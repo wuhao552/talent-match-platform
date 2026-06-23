@@ -50,7 +50,6 @@ export interface MatchResult {
   // Matching fields
   algorithmTrace?: AlgorithmStep[]
   llmAssessment?: LlmAssessment
-  communityContext?: CommunityContext
   // Enriched fields
   resumeFilename?: string
   candidateName?: string
@@ -81,8 +80,6 @@ export interface ScoreBreakdown {
   algorithmDimensions?: {
     coverage: number
     adequacy: number
-    domainOverlap: number
-    transferBonus: number
   }
 }
 
@@ -108,12 +105,6 @@ export interface LlmAssessment {
   readinessMonths: number
   confidence: number
   reasoning: string
-}
-
-export interface CommunityContext {
-  resumeCommunities: Array<{ title: string; summary: string; skillDomain: string }>
-  jobCommunities: Array<{ title: string; summary: string; skillDomain: string }>
-  domainOverlap: string[]
 }
 
 // API response wrapper

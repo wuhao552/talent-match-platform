@@ -1,22 +1,21 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { DocumentProvider } from '@/hooks/useDocuments'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { cn } from '@/lib/utils'
 import {
-  LayoutDashboard, FileText, ClipboardList, LogOut, ChevronLeft,
+  LayoutDashboard, LogOut, ChevronLeft,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 const navItems = {
   individual: [
     { to: '/dashboard', label: '工作台', icon: LayoutDashboard },
-    { to: '/upload/resume', label: '上传简历', icon: FileText },
   ],
   enterprise: [
     { to: '/dashboard', label: '工作台', icon: LayoutDashboard },
-    { to: '/upload/job', label: '发布职位', icon: ClipboardList },
   ],
 }
 
@@ -101,7 +100,7 @@ export function Layout({ children }: { children: ReactNode }) {
         <div className={cn('border-t', collapsed ? 'p-2' : 'p-3')}>
           {isAuthenticated ? (
             <div className={cn('flex items-center', collapsed ? 'flex-col gap-2' : 'gap-3')}>
-              <Avatar className="h-8 w-8 shrink-0 ring-2 ring-primary/20">
+              <Avatar className="h-8 w-8 shrink-0 ring-2 ring-primary/20 cursor-pointer hover:ring-primary/50 transition-all" onClick={() => navigate('/profile')} title="个人资料">
                 <AvatarFallback className="text-xs">
                   {user?.username?.charAt(0).toUpperCase()}
                 </AvatarFallback>
@@ -143,7 +142,9 @@ export function Layout({ children }: { children: ReactNode }) {
 
       {/* Main */}
       <main className="flex-1 overflow-auto bg-background">
-        <div className="container mx-auto px-6 py-6">{children}</div>
+        <DocumentProvider>
+          <div className="container mx-auto px-6 py-6">{children}</div>
+        </DocumentProvider>
       </main>
     </div>
   )

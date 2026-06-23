@@ -45,6 +45,11 @@ export const authApi = {
       body: JSON.stringify(data),
     }),
   profile: () => request<ApiResponse<{ user: AuthResponse['user'] }>>('/auth/profile'),
+  changePassword: (data: { oldPassword: string; newPassword: string }) =>
+    request<ApiResponse<{ message: string }>>('/auth/password', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
 }
 
 // Documents
@@ -127,6 +132,18 @@ export const matchingApi = {
     const token = localStorage.getItem('token') || ''
     return `${BASE}/matching/stream-all?docId=${encodeURIComponent(docId)}&token=${encodeURIComponent(token)}`
   },
+}
+
+// Dashboard — aggregated endpoint
+export const dashboardApi = {
+  get: () =>
+    request<
+      ApiResponse<{
+        documents: Document[]
+        skillsMap: Record<string, DocumentSkill[]>
+        matches: MatchResult[]
+      }>
+    >('/dashboard'),
 }
 
 /** Build SSE URL for document parse stream */

@@ -1,62 +1,82 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
-import { useDocuments } from '@/hooks/useDocuments'
-import { documentApi, matchingApi } from '@/services/api'
+import { dashboardApi, documentApi } from '@/services/api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { scoreColor, DOC_TYPE_LABEL, STATUS_LABEL } from '@/lib/utils'
 import { FileText, Briefcase, Upload, ChevronRight, Trash2, Zap } from 'lucide-react'
 import { toast } from 'sonner'
-import type { DocumentSkill, MatchResult } from '@/types'
+import type { Document, DocumentSkill, MatchResult } from '@/types'
 
 export function Dashboard() {
   const { user } = useAuth()
   const navigate = useNavigate()
-  const { documents, loading, refresh } = useDocuments()
+
+  // 所有数据来自同一个请求，天然一致
+  const [documents, setDocuments] = useState<Document[]>([])
   const [matches, setMatches] = useState<MatchResult[]>([])
   const [skillsMap, setSkillsMap] = useState<Record<string, DocumentSkill[]>>({})
-  const prevPendingRef = useRef(true)
+  const [loading, setLoading] = useState(true)
 
   const isIndividual = user?.role === 'individual'
 
-  const fetchSkills = async (docs: typeof documents) => {
-    const parsedIds = docs.filter((d) => d.status === 'parsed').map((d) => d.id)
-    if (parsedIds.length === 0) return
+  // 加载聚合数据
+  const fetchDashboard = useCallback(async () => {
     try {
-      const res = await documentApi.getSkillsBatch(parsedIds)
-      const grouped: Record<string, DocumentSkill[]> = {}
-      for (const s of res.data) {
-        ;(grouped[s.documentId] ??= []).push(s)
-      }
-      setSkillsMap(grouped)
+      const r = await dashboardApi.get()
+      setDocuments(r.data.documents)
+      setSkillsMap(r.data.skillsMap)
+      setMatches(r.data.matches)
     } catch { /* ignore */ }
-  }
+    setLoading(false)
+  }, [])
 
-  // 初始加载技能和推荐
+  // 初始加载
   useEffect(() => {
-    if (documents.length === 0) return
-    fetchSkills(documents)
-    matchingApi.recommend().then((m) => setMatches(m.data)).catch(() => {})
-  }, [documents.length === 0])
+    fetchDashboard()
+  }, [fetchDashboard])
 
-  // 当文档从解析中变为全部完成时，刷新技能和推荐
+  // 有 pending 文档时轮询，全部完成后停止并刷新一次
+  const prevPendingRef = useRef(false)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   useEffect(() => {
     const hasPending = documents.some((d) => d.status === 'uploaded' || d.status === 'parsing')
-    if (!hasPending && prevPendingRef.current) {
-      fetchSkills(documents)
-      matchingApi.recommend().then((m) => setMatches(m.data)).catch(() => {})
+
+    if (hasPending && !pollRef.current) {
+      // 开始轮询
+      pollRef.current = setInterval(fetchDashboard, 3000)
+    } else if (!hasPending && pollRef.current) {
+      // 停止轮询
+      clearInterval(pollRef.current)
+      pollRef.current = null
+      // 如果之前有 pending，刷新一次确保拿到最新匹配结果
+      if (prevPendingRef.current) {
+        fetchDashboard()
+      }
     }
+
     prevPendingRef.current = hasPending
-  }, [documents])
+  }, [documents, fetchDashboard])
+
+  // 清理轮询
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }
+  }, [])
 
   const handleDelete = async (id: string, filename: string) => {
     if (!window.confirm(`确定要删除「${filename}」吗？此操作不可撤销。`)) return
     try {
       await documentApi.delete(id)
       toast.success('删除成功')
-      refresh()
+      fetchDashboard()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '删除失败')
     }

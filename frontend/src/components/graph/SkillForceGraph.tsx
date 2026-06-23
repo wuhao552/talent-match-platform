@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import * as d3 from 'd3'
+import { select } from 'd3-selection'
+import { forceSimulation, forceLink, forceManyBody, forceCollide, forceX, forceY } from 'd3-force'
+import { zoom } from 'd3-zoom'
+import { drag } from 'd3-drag'
+import type { SimulationNodeDatum } from 'd3-force'
+import 'd3-transition'
 import type { DocumentSkill } from '@/types'
 
 interface GraphLayout {
@@ -18,7 +23,7 @@ interface Props {
   height?: number
 }
 
-interface SimNode extends d3.SimulationNodeDatum {
+interface SimNode extends SimulationNodeDatum {
   id: string
   label: string
   group: 'me' | 'job' | 'skill'
@@ -85,7 +90,7 @@ export function SkillForceGraph({ skills, jobSkills, matchedSkillIds, matchedPai
     if (!ref.current || skills.length === 0) return
     // Only re-init if data actually changed
     if (sigRef.current !== dataSignature) return
-    const svg = d3.select(ref.current)
+    const svg = select(ref.current)
     svg.selectAll('*').remove()
 
     try {
@@ -227,21 +232,21 @@ export function SkillForceGraph({ skills, jobSkills, matchedSkillIds, matchedPai
 
       // Create d3-force simulation
       // Co-occurrence edges have lower strength to avoid pulling nodes together
-      const linkForce = d3.forceLink<SimNode, SimLink>(allLinks)
+      const linkForce = forceLink<SimNode, SimLink>(allLinks)
         .id((d) => d.id)
         .distance((d) => (d as StyledLink).isCooc ? 90 : 70)
         .strength((d) => (d as StyledLink).isCooc ? 0.08 : 0.3)
 
-      const sim = d3.forceSimulation<SimNode>(nodes)
+      const sim = forceSimulation<SimNode>(nodes)
         .force('link', linkForce)
-        .force('charge', d3.forceManyBody().strength(-350))
-        .force('collision', d3.forceCollide<SimNode>().radius((d) => d.radius + 14))
-        .force('x', d3.forceX((d: any) => {
+        .force('charge', forceManyBody().strength(-350))
+        .force('collision', forceCollide<SimNode>().radius((d) => d.radius + 14))
+        .force('x', forceX((d: any) => {
           if (d.isCenter) return d.group === 'me' ? leftX : rightX
           if (d.matched) return cx
           return d.isJob ? rightX : leftX
         }).strength(0.15))
-        .force('y', d3.forceY(cy).strength(0.05))
+        .force('y', forceY(cy).strength(0.05))
 
       nodes[0].fx = leftX; nodes[0].fy = cy
       if (hasJob) {
@@ -256,7 +261,7 @@ export function SkillForceGraph({ skills, jobSkills, matchedSkillIds, matchedPai
 
       const container = svg.append('g')
 
-      svg.call(d3.zoom<SVGSVGElement, unknown>()
+      svg.call(zoom<SVGSVGElement, unknown>()
         .scaleExtent([0.3, 3])
         .on('zoom', (event) => { container.attr('transform', event.transform.toString()) }) as any)
 
@@ -290,15 +295,15 @@ export function SkillForceGraph({ skills, jobSkills, matchedSkillIds, matchedPai
         .attr('cursor', 'pointer')
         .on('mouseenter', function (event, d) {
           if (d.isCenter) return
-          d3.select(this).select('circle').transition().duration(200).attr('r', d.radius * 1.3)
+          select(this).select('circle').transition().duration(200).attr('r', d.radius * 1.3)
           setTooltip({ x: event.offsetX, y: event.offsetY, label: d.label, prof: d.proficiency, matched: d.matched })
         })
         .on('mouseleave', function (_event, d) {
           if (d.isCenter) return
-          d3.select(this).select('circle').transition().duration(200).attr('r', d.radius)
+          select(this).select('circle').transition().duration(200).attr('r', d.radius)
           setTooltip(null)
         })
-        .call(d3.drag<SVGGElement, SimNode>()
+        .call(drag<SVGGElement, SimNode>()
           .on('start', (e: any, d: any) => {
             if (d.isCenter) return
             if (!e.active) sim.alphaTarget(0.3).restart()
@@ -360,7 +365,15 @@ export function SkillForceGraph({ skills, jobSkills, matchedSkillIds, matchedPai
   }
 
   const hasJob = jobSkills && jobSkills.length > 0
-  const matchCount = matchedSkillIds?.length || 0
+  // 匹配数 = 精确匹配 + 模糊匹配（去重）
+  const exactMatched = new Set(matchedSkillIds || [])
+  const fuzzyMatchedResume = new Set<number>()
+  if (matchedPairs) {
+    for (const p of matchedPairs) {
+      if (p.resumeSkillId) fuzzyMatchedResume.add(p.resumeSkillId)
+    }
+  }
+  const matchCount = new Set([...exactMatched, ...fuzzyMatchedResume]).size
 
   return (
     <div className="space-y-4">
