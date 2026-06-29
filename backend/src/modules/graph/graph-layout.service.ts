@@ -45,7 +45,6 @@ const profRadius: Record<string, number> = {
 export class GraphLayoutService {
   computeLayout(
     skills: Array<{ skillId: number; proficiency: string; name: string }>,
-    coocEdges: Array<{ sourceId: number; targetId: number }>,
     width = 760,
     height = 480,
   ): GraphLayoutResult {
@@ -86,25 +85,6 @@ export class GraphLayoutService {
     const links: LayoutLink[] = [];
     for (const s of skills) {
       links.push({ source: 'me', target: `s-${s.skillId}`, matched: false });
-    }
-
-    // Add co-occurrence edges between skill nodes
-    const nodeIds = new Set(nodes.map((n) => n.id));
-    for (const e of coocEdges) {
-      const srcId = `s-${e.sourceId}`;
-      const tgtId = `s-${e.targetId}`;
-      if (nodeIds.has(srcId) && nodeIds.has(tgtId) && srcId !== tgtId) {
-        const alreadyExists = links.some(
-          (l) =>
-            (this.getNodeId(l.source) === srcId &&
-              this.getNodeId(l.target) === tgtId) ||
-            (this.getNodeId(l.source) === tgtId &&
-              this.getNodeId(l.target) === srcId),
-        );
-        if (!alreadyExists) {
-          links.push({ source: srcId, target: tgtId, matched: false });
-        }
-      }
     }
 
     // Run d3-force simulation to completion

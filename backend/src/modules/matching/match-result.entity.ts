@@ -72,6 +72,7 @@ export interface MatchDetail {
   skillName: string;
   personProficiency: string;
   jobRequirement: string;
+  matchMethod?: 'exact' | 'embedding'; // 匹配方式
   resumeSkillId?: number;
   jobSkillId?: number;
   importance?: string; // required / preferred / optional

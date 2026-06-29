@@ -399,7 +399,7 @@ export class DocumentService {
       ...((result.data['unmatchedSkills'] as any[]) || []),
     ];
     if (allSkillsForGraph.length > 0) {
-      const layout = this.graphLayout.computeLayout(allSkillsForGraph, []);
+      const layout = this.graphLayout.computeLayout(allSkillsForGraph);
       this.docRepo
         .findOne({ where: { id: doc.id }, select: ['parsedJson'] })
         .then((current) => {

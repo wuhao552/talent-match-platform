@@ -324,7 +324,7 @@ export class OrchestratorAgent {
       timestamp: Date.now(),
     });
 
-    // Step 3: Return result (community detection removed — Neo4j dependency dropped)
+    // Step 3: Return result
     return {
       success: parseResult.success || extractedSkills.length > 0,
       data: {

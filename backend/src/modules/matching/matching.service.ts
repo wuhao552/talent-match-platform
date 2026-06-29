@@ -70,7 +70,7 @@ export class MatchingService {
     preload?: MatchPreload,
   ): Promise<MatchResult> {
     try {
-      return await this._graphRAGMatch(resumeDocId, jobDocId, preload);
+      return await this.runMatchPipeline(resumeDocId, jobDocId, preload);
     } catch (err) {
       console.error(
         `[Matching] calculateMatch FAILED resume=${resumeDocId?.slice(0, 8)} job=${jobDocId?.slice(0, 8)}:`,
@@ -201,6 +201,7 @@ export class MatchingService {
           resumeSkillId: skillId,
           jobSkillId: skillId,
           importance: this.inferImportance(jobSkill.proficiency),
+          matchMethod: 'exact',
         });
         usedResumeSkillIds.add(skillId);
         usedJobSkillIds.add(skillId);
@@ -213,8 +214,10 @@ export class MatchingService {
       (s) => !usedJobSkillIds.has(s.skillId),
     );
     const usedFuzzyResume = new Set<number>();
+    let embeddingPairs: Array<{ jobSkill: string; resumeSkill: string; similarity: number }> = [];
     for (const jobSkill of jobRemaining) {
       let best: { rs: DocumentSkill; sim: number } | null = null;
+      let pairsForJob: Array<{ resumeSkill: string; similarity: number }> = [];
       for (const rs of resumeRemaining) {
         if (usedFuzzyResume.has(rs.skillId)) continue;
         // embedding 语义相似度
@@ -227,8 +230,34 @@ export class MatchingService {
         } catch {
           // embedding API 失败时，保持 sim = 0
         }
+        pairsForJob.push({ resumeSkill: rs.skillName || rs.skill?.name || '', similarity: sim });
         if (sim >= 0.5 && (!best || sim > best.sim)) best = { rs, sim };
       }
+      embeddingPairs.push({
+        jobSkill: jobSkill.skillName || jobSkill.skill?.name || '',
+        resumeSkill: best?.rs.skillName || best?.rs.skill?.name || '',
+        similarity: best?.sim || 0,
+      });
+      // 实时推送当前岗位的语义匹配进度
+      onProgress({
+        phase: 'embedding_matching',
+        label: '语义匹配',
+        status: 'running',
+        summary: `"${jobSkill.skillName || jobSkill.skill?.name}" × ${pairsForJob.length} 个候选`,
+        data: {
+          embeddingPairs: embeddingPairs.map((p) => ({
+            job: p.jobSkill,
+            resume: p.resumeSkill,
+            sim: Math.round(p.similarity * 100),
+          })),
+          current: jobSkill.skillName || jobSkill.skill?.name,
+          detail: pairsForJob.map((p) => ({
+            resume: p.resumeSkill,
+            sim: Math.round(p.similarity * 100),
+            matched: p.similarity >= 0.5,
+          })),
+        },
+      });
       if (best) {
         usedFuzzyResume.add(best.rs.skillId);
         matchDetails.push({
@@ -236,6 +265,7 @@ export class MatchingService {
           skillName: `${best.rs.skillName || best.rs.skill?.name} ↔ ${jobSkill.skillName || jobSkill.skill?.name}`,
           personProficiency: best.rs.proficiency || 'unknown',
           jobRequirement: jobSkill.proficiency || 'unknown',
+          matchMethod: 'embedding',
           resumeSkillId: best.rs.skillId,
           jobSkillId: jobSkill.skillId,
           importance: this.inferImportance(jobSkill.proficiency),
@@ -244,6 +274,22 @@ export class MatchingService {
         usedJobSkillIds.add(jobSkill.skillId);
       }
     }
+
+    onProgress({
+      phase: 'embedding_matching',
+      label: '语义匹配',
+      status: 'done',
+      summary: `${embeddingPairs.filter((p) => p.similarity >= 0.5).length} 项模糊匹配成功`,
+      data: {
+        embeddingPairs: embeddingPairs
+          .filter((p) => p.similarity >= 0.5)
+          .map((p) => ({
+            job: p.jobSkill,
+            resume: p.resumeSkill,
+            sim: Math.round(p.similarity * 100),
+          })),
+      },
+    });
 
     onProgress({
       phase: 'skill_matching',
@@ -660,7 +706,7 @@ export class MatchingService {
     return results;
   }
 
-  private async _graphRAGMatch(
+  private async runMatchPipeline(
     resumeDocId: string,
     jobDocId: string,
     preload?: MatchPreload,
@@ -750,6 +796,7 @@ export class MatchingService {
           resumeSkillId: skillId,
           jobSkillId: skillId,
           importance: this.inferImportance(jobSkill.proficiency),
+          matchMethod: 'exact',
         });
         usedResumeSkillIds.add(skillId);
         usedJobSkillIds.add(skillId);
@@ -769,7 +816,6 @@ export class MatchingService {
       let best: { rs: DocumentSkill; sim: number } | null = null;
       for (const rs of resumeRemaining) {
         if (usedFuzzyResume.has(rs.skillId)) continue;
-        // embedding 语义相似度
         let sim = 0;
         try {
           sim = await this.embeddingService.semanticSimilarity(
@@ -777,7 +823,6 @@ export class MatchingService {
             rs.skillName || '',
           );
         } catch {
-          // embedding API 失败时，保持 sim = 0
         }
         if (sim >= 0.5 && (!best || sim > best.sim)) best = { rs, sim };
       }
@@ -986,6 +1031,13 @@ export class MatchingService {
   async getTopKByAlgorithmScore(
     docId: string,
     k: number,
+    onEmbeddingProgress?: (step: {
+      phase: string;
+      label: string;
+      status: string;
+      summary: string;
+      data?: Record<string, unknown>;
+    }) => void,
   ): Promise<
     Array<{
       doc: Document;
@@ -1043,7 +1095,7 @@ export class MatchingService {
         const otherSkills = batchMap.get(otherDoc.id) || [];
         const resumeSkills = isResume ? mySkills : otherSkills;
         const jobSkills = isResume ? otherSkills : mySkills;
-        const matchDetails = await this.runSkillMatching(resumeSkills, jobSkills);
+        const matchDetails = await this.runSkillMatching(resumeSkills, jobSkills, onEmbeddingProgress);
         const result = this.calculateAlgorithmScore(
           matchDetails,
           resumeSkills,
@@ -1362,6 +1414,13 @@ export class MatchingService {
   private async runSkillMatching(
     resumeSkills: DocumentSkill[],
     jobSkills: DocumentSkill[],
+    onEmbeddingProgress?: (step: {
+      phase: string;
+      label: string;
+      status: string;
+      summary: string;
+      data?: Record<string, unknown>;
+    }) => void,
   ): Promise<MatchDetail[]> {
     const matchDetails: MatchDetail[] = [];
     const resumeById = new Map<number, DocumentSkill>();
@@ -1383,6 +1442,7 @@ export class MatchingService {
           resumeSkillId: skillId,
           jobSkillId: skillId,
           importance: this.inferImportance(jobSkill.proficiency),
+          matchMethod: 'exact',
         });
         usedResumeSkillIds.add(skillId);
         usedJobSkillIds.add(skillId);
@@ -1415,7 +1475,6 @@ export class MatchingService {
       let best: { rs: DocumentSkill; sim: number } | null = null;
       for (const rs of resumeRemaining) {
         if (usedFuzzyResume.has(rs.skillId)) continue;
-        // embedding 语义相似度
         let sim = 0;
         try {
           sim = await this.embeddingService.semanticSimilarity(
@@ -1423,9 +1482,21 @@ export class MatchingService {
             rs.skillName || '',
           );
         } catch {
-          // embedding API 失败时，保持 sim = 0
         }
         if (sim >= 0.5 && (!best || sim > best.sim)) best = { rs, sim };
+      }
+      if (onEmbeddingProgress) {
+        onEmbeddingProgress({
+          phase: 'embedding_matching',
+          label: '语义匹配',
+          status: 'done',
+          summary: `${jobSkill.skillName || jobSkill.skill?.name || ''}${best ? ` → ${best.rs.skillName || best.rs.skill?.name || ''} (${(best.sim * 100).toFixed(0)}%)` : ' 无匹配'}`,
+          data: {
+            jobSkill: jobSkill.skillName || jobSkill.skill?.name || '',
+            matchedResume: best?.rs.skillName || best?.rs.skill?.name || '',
+            similarity: best?.sim || 0,
+          },
+        });
       }
       if (best) {
         usedFuzzyResume.add(best.rs.skillId);
@@ -1434,6 +1505,7 @@ export class MatchingService {
           skillName: `${best.rs.skillName || best.rs.skill?.name} ↔ ${jobSkill.skillName || jobSkill.skill?.name}`,
           personProficiency: best.rs.proficiency || 'unknown',
           jobRequirement: jobSkill.proficiency || 'unknown',
+          matchMethod: 'embedding',
           resumeSkillId: best.rs.skillId,
           jobSkillId: jobSkill.skillId,
           importance: this.inferImportance(jobSkill.proficiency),

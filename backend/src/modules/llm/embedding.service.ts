@@ -44,7 +44,7 @@ export class EmbeddingService {
     }
 
     if (uncached.length > 0) {
-      const vectors = await this.callEmbeddingApi(uncached);
+      const vectors = await this.callEmbeddingApiBatched(uncached);
       for (let i = 0; i < uncached.length; i++) {
         this.cache.set(uncached[i], vectors[i]);
         result.set(uncached[i], vectors[i]);
@@ -86,6 +86,11 @@ export class EmbeddingService {
 
   // ── 内部方法 ──
 
+  /**
+   * 最大 batch size: DashScope text-embedding-v4 限制每次最多 10 条。
+   */
+  private readonly maxBatchSize = 10;
+
   private async callEmbeddingApi(texts: string[]): Promise<number[][]> {
     const url = `${this.baseUrl}/embeddings`;
     const controller = new AbortController();
@@ -124,6 +129,22 @@ export class EmbeddingService {
       );
       throw err;
     }
+  }
+
+  /**
+   * 自动分批调用 API，每批不超过 maxBatchSize 条，结果按输入顺序拼接。
+   */
+  private async callEmbeddingApiBatched(
+    texts: string[],
+  ): Promise<number[][]> {
+    if (texts.length === 0) return [];
+    const results: number[][] = [];
+    for (let i = 0; i < texts.length; i += this.maxBatchSize) {
+      const chunk = texts.slice(i, i + this.maxBatchSize);
+      const vectors = await this.callEmbeddingApi(chunk);
+      results.push(...vectors);
+    }
+    return results;
   }
 
   private cosineSim(a: number[], b: number[]): number {

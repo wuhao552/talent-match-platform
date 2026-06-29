@@ -157,6 +157,7 @@ export class MatchingController {
 
       // 阶段一：算法分预筛 Top-3
       const TOP_K = 3;
+      const embeddingResults: Array<{ jobSkill: string; bestMatch: string | null; similarity: number }> = [];
       send('progress', {
         phase: 'algorithm_prefilter',
         label: '算法预筛',
@@ -166,6 +167,16 @@ export class MatchingController {
       const scored = await this.matchingService.getTopKByAlgorithmScore(
         docId,
         TOP_K,
+        (step) => {
+          send('progress', step);
+          if (step.data?.jobSkill && step.data?.matchedResume) {
+            embeddingResults.push({
+              jobSkill: step.data.jobSkill as string,
+              bestMatch: (step.data.matchedResume as string) || null,
+              similarity: (step.data.similarity as number) || 0,
+            });
+          }
+        },
       );
       const candidates = scored.map((s) => s.doc);
       send('progress', {
@@ -173,6 +184,7 @@ export class MatchingController {
         label: '算法预筛',
         status: 'done',
         summary: `算法分排序完成，选出 Top-${candidates.length}`,
+        data: { embeddingResults },
       });
 
       send('start', {
