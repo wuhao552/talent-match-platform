@@ -67,6 +67,7 @@ export interface MatchDetail {
   skillName: string
   personProficiency: string
   jobRequirement: string
+  matchMethod?: 'exact' | 'embedding'
   resumeSkillId?: number
   jobSkillId?: number
   importance?: string

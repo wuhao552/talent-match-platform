@@ -99,12 +99,6 @@ export const documentApi = {
     request<ApiResponse<DocumentSkill[]>>(`/documents/skills/batch?${ids.map((id) => `ids=${encodeURIComponent(id)}`).join('&')}`),
 }
 
-// Graph — Neo4j dependency removed; graphApi kept as no-op for backward compat
-export const graphApi = {
-  getCooccurrenceBatch: () =>
-    Promise.resolve({ code: 200, message: 'ok', data: [] as Array<{ sourceId: number; targetId: number; freqSkill: number }> }),
-}
-
 // Matching
 export const matchingApi = {
   calculate: (resumeDocId: string, jobDocId: string) =>

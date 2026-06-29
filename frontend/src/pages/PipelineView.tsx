@@ -733,7 +733,12 @@ function MatchPairDisplay({ pair }: { pair: MatchPair }) {
         {isCached && pair.result?.matchDetails && pair.result.matchDetails.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {pair.result.matchDetails.slice(0, 10).map((d, i) => (
-              <Badge key={i} variant="secondary" className="text-[10px]">{d.skillName}</Badge>
+              <Badge key={i} variant="secondary" className="text-[10px]">
+                {d.skillName}
+                {d.matchMethod === 'embedding' && (
+                  <span className="ml-1 text-[9px] text-purple-500">·语义</span>
+                )}
+              </Badge>
             ))}
             {pair.result.matchDetails.length > 10 && (
               <Badge variant="outline" className="text-[10px]">+{pair.result.matchDetails.length - 10}</Badge>
@@ -771,6 +776,7 @@ export function PipelineView() {
   const [expandedParseSteps, setExpandedParseSteps] = useState<Set<string>>(new Set())
   const [matchPairs, setMatchPairs] = useState<MatchPair[]>([])
   const [matchPhaseSteps, setMatchPhaseSteps] = useState<PipelineStep[]>([])
+  const [embeddingExpanded, setEmbeddingExpanded] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef(Date.now())
   const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
@@ -1280,20 +1286,47 @@ export function PipelineView() {
           )}
 
           {/* Algorithm pre-filter steps (shown before match pairs arrive) */}
-          {matchPhaseSteps.length > 0 && matchPairs.length === 0 && (
+          {matchPhaseSteps.length > 0 && (
             <Card>
               <CardContent className="py-3 space-y-2">
-                {matchPhaseSteps.map(step => (
-                  <div key={step.phase} className="flex items-center gap-2 text-sm">
-                    <StatusIcon status={step.status} />
-                    <span className="font-medium">{step.label || step.phase}</span>
-                    {step.status === 'running' && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
-                    {step.status === 'done' && step.durationMs != null && (
-                      <span className="text-[10px] text-muted-foreground tabular-nums">{step.durationMs}ms</span>
-                    )}
-                    <span className="text-xs text-muted-foreground">{step.summary}</span>
-                  </div>
-                ))}
+                {matchPhaseSteps.map(step => {
+                  const isPrefilter = step.phase === 'algorithm_prefilter'
+                  const embedData = step.data?.embeddingResults as Array<{ jobSkill: string; bestMatch: string | null; similarity: number }> | undefined
+                  return (
+                    <div key={step.phase}>
+                      <button onClick={() => isPrefilter && step.status === 'done' && setEmbeddingExpanded(!embeddingExpanded)} className="flex items-center gap-2 text-sm w-full text-left">
+                        <StatusIcon status={step.status} />
+                        <span className="font-medium">{step.label || step.phase}</span>
+                        {step.status === 'running' && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                        {step.status === 'done' && step.durationMs != null && (
+                          <span className="text-[10px] text-muted-foreground tabular-nums">{step.durationMs}ms</span>
+                        )}
+                        <span className="text-xs text-muted-foreground">{step.summary}</span>
+                        {isPrefilter && step.status === 'done' && embedData && embedData.length > 0 && (
+                          <ChevronRight className={`h-3 w-3 text-muted-foreground ml-auto transition-transform ${embeddingExpanded ? 'rotate-90' : ''}`} />
+                        )}
+                      </button>
+                      {embeddingExpanded && embedData && embedData.length > 0 && (
+                        <div className="mt-2 ml-6 space-y-1">
+                          {embedData.map((r, i) => (
+                            <div key={i} className="flex items-center gap-2 text-xs">
+                              <span className="font-medium">{r.jobSkill}</span>
+                              <svg className="h-3 w-3 text-muted-foreground shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
+                              {r.bestMatch ? (
+                                <>
+                                  <span className="text-purple-600 font-medium">{r.bestMatch}</span>
+                                  <span className="text-muted-foreground tabular-nums">({Math.round(r.similarity * 100)}%)</span>
+                                </>
+                              ) : (
+                                <span className="text-muted-foreground">无匹配</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </CardContent>
             </Card>
           )}

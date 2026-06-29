@@ -417,6 +417,13 @@ export function MatchingResult() {
                         {d.importance === 'required' ? '必须' : d.importance === 'preferred' ? '加分' : '可选'}
                       </span>
                     )}
+                    <span className={`ml-1.5 text-[10px] px-1 py-0.5 rounded ${
+                      d.matchMethod === 'embedding'
+                        ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+                        : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                    }`}>
+                      {d.matchMethod === 'embedding' ? '语义匹配' : '精确匹配'}
+                    </span>
                   </div>
                   <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0 ml-3">
                     <span>{proficiencyLabel[d.personProficiency] || d.personProficiency}</span>

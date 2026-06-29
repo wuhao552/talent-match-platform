@@ -17,7 +17,6 @@ interface Props {
   jobSkills?: DocumentSkill[]
   matchedSkillIds?: number[]
   matchedPairs?: Array<{ resumeSkillId?: number; jobSkillId?: number }>
-  coocEdges?: Array<{ sourceId: number; targetId: number; freqSkill: number }>
   precomputedLayout?: GraphLayout
   width?: number
   height?: number
@@ -57,7 +56,7 @@ const profRadius: Record<string, number> = {
 }
 
 
-export function SkillForceGraph({ skills, jobSkills, matchedSkillIds, matchedPairs, coocEdges, precomputedLayout, width = 760, height = 480 }: Props) {
+export function SkillForceGraph({ skills, jobSkills, matchedSkillIds, matchedPairs, precomputedLayout, width = 760, height = 480 }: Props) {
   const ref = useRef<SVGSVGElement>(null)
   const [tooltip, setTooltip] = useState<{ x: number; y: number; label: string; prof: string; matched: boolean } | null>(null)
   const matched = new Set(matchedSkillIds || [])
@@ -78,7 +77,6 @@ export function SkillForceGraph({ skills, jobSkills, matchedSkillIds, matchedPai
     j: jobSkills?.map(s => `${s.skillId}:${s.skillName}:${s.proficiency}`),
     m: matchedSkillIds,
     p: matchedPairs,
-    c: coocEdges?.map(e => `${e.sourceId}-${e.targetId}`),
     pl: precomputedLayout?.nodes.map(n => `${n.id}:${n.x}:${n.y}`),
     w: width, h: height,
   })
@@ -179,63 +177,16 @@ export function SkillForceGraph({ skills, jobSkills, matchedSkillIds, matchedPai
         }
       }
 
-      // Co-occurrence edges from Neo4j knowledge graph
-      // 只保留每个节点最强的几条边，避免视觉混乱
-      const coocLinks: SimLink[] = []
-      if (coocEdges && coocEdges.length > 0) {
-        const nodeIds = new Set(nodes.map((n) => n.id))
-        const resolveNodeId = (skillId: number) => {
-          const sId = `s-${skillId}`
-          const jId = `j-${skillId}`
-          if (nodeIds.has(sId)) return sId
-          if (nodeIds.has(jId)) return jId
-          return null
-        }
-
-        // 构建邻接表，按频率排序
-        const adj = new Map<string, Array<{ target: string; freq: number }>>()
-        for (const e of coocEdges) {
-          const src = resolveNodeId(e.sourceId)
-          const tgt = resolveNodeId(e.targetId)
-          if (!src || !tgt || src === tgt) continue
-          if (!adj.has(src)) adj.set(src, [])
-          adj.get(src)!.push({ target: tgt, freq: e.freqSkill })
-          if (!adj.has(tgt)) adj.set(tgt, [])
-          adj.get(tgt)!.push({ target: src, freq: e.freqSkill })
-        }
-
-        // 每个节点只保留频率最高的 3 条共现边
-        const MAX_COCOC_PER_NODE = 3
-        const addedPairs = new Set<string>()
-        for (const [src, neighbors] of adj) {
-          neighbors.sort((a, b) => b.freq - a.freq)
-          for (let i = 0; i < Math.min(MAX_COCOC_PER_NODE, neighbors.length); i++) {
-            const tgt = neighbors[i].target
-            const pairKey = [src, tgt].sort().join('→')
-            if (addedPairs.has(pairKey)) continue
-            addedPairs.add(pairKey)
-            coocLinks.push({ source: src, target: tgt, matched: false })
-          }
-        }
-      }
-
-      // Combine all links — co-occurrence links use a flag for styling
-      interface StyledLink extends SimLink { isCooc?: boolean }
-      const allLinks: StyledLink[] = [
-        ...links,
-        ...coocLinks.map(l => ({ ...l, isCooc: true })),
-      ]
       const nodeColor = (d: SimNode) => {
         if (d.isCenter) return d.group === 'me' ? '#6366f1' : '#10b981'
         return profColors[d.proficiency] || '#60a5fa'
       }
 
       // Create d3-force simulation
-      // Co-occurrence edges have lower strength to avoid pulling nodes together
-      const linkForce = forceLink<SimNode, SimLink>(allLinks)
+      const linkForce = forceLink<SimNode, SimLink>(links)
         .id((d) => d.id)
-        .distance((d) => (d as StyledLink).isCooc ? 90 : 70)
-        .strength((d) => (d as StyledLink).isCooc ? 0.08 : 0.3)
+        .distance(70)
+        .strength(0.3)
 
       const sim = forceSimulation<SimNode>(nodes)
         .force('link', linkForce)
@@ -274,21 +225,11 @@ export function SkillForceGraph({ skills, jobSkills, matchedSkillIds, matchedPai
         .selectAll('stop').data([{ o: '0%', c: '#34d399' }, { o: '100%', c: '#059669' }])
         .join('stop').attr('offset', (d) => d.o).attr('stop-color', (d) => d.c)
 
-      // Links — co-occurrence edges are much more subtle
-      container.append('g').selectAll('line').data(allLinks).join('line')
-        .attr('stroke', (d) => {
-          if ((d as StyledLink).isCooc) return '#e5e7eb'
-          return d.matched ? '#a7f3d0' : '#e5e7eb'
-        })
-        .attr('stroke-width', (d) => {
-          if ((d as StyledLink).isCooc) return 0.8
-          return d.matched ? 2.5 : 1.5
-        })
-        .attr('stroke-opacity', (d) => {
-          if ((d as StyledLink).isCooc) return 0.3
-          return 0.8
-        })
-        .attr('stroke-dasharray', (d) => (d as StyledLink).isCooc ? '3,3' : null)
+      // Links
+      container.append('g').selectAll('line').data(links).join('line')
+        .attr('stroke', (d) => d.matched ? '#a7f3d0' : '#e5e7eb')
+        .attr('stroke-width', (d) => d.matched ? 2.5 : 1.5)
+        .attr('stroke-opacity', 0.8)
 
       // Nodes
       const node = container.append('g').selectAll('g').data(nodes).join('g')
