@@ -49,6 +49,7 @@ export interface MatchResult {
   createdAt: string
   // Matching fields
   algorithmTrace?: AlgorithmStep[]
+  embeddingTrace?: EmbeddingTraceItem[]
   llmAssessment?: LlmAssessment
   // Enriched fields
   resumeFilename?: string
@@ -82,6 +83,12 @@ export interface ScoreBreakdown {
     coverage: number
     adequacy: number
   }
+}
+
+export interface EmbeddingTraceItem {
+  jobSkill: string
+  bestMatch: string | null
+  similarity: number
 }
 
 export interface AlgorithmStep {
