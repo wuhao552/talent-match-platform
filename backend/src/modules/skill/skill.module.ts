@@ -15,14 +15,7 @@ import { LlmModule } from '../llm/llm.module';
     LlmModule,
   ],
   controllers: [SkillController],
-  providers: [
-    SkillService,
-    SkillSeedService,
-    SkillMatcherService,
-  ],
-  exports: [
-    SkillService,
-    SkillMatcherService,
-  ],
+  providers: [SkillService, SkillSeedService, SkillMatcherService],
+  exports: [SkillService, SkillMatcherService],
 })
 export class SkillModule {}

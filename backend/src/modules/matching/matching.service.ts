@@ -7,6 +7,7 @@ import {
   ScoreBreakdown,
   AlgorithmStep,
   LlmAssessment,
+  EmbeddingTraceItem,
 } from './match-result.entity';
 import { Document } from '../document/document.entity';
 import { DocumentSkill } from '../skill/document-skill.entity';
@@ -23,6 +24,7 @@ export interface EnrichedMatch {
   scoreBreakdown: ScoreBreakdown | null;
   matchDetails: MatchDetail[];
   algorithmTrace?: AlgorithmStep[] | null;
+  embeddingTrace?: EmbeddingTraceItem[] | null;
   llmAssessment?: LlmAssessment | null;
   createdAt: Date;
   resumeDocId: string;
@@ -68,9 +70,22 @@ export class MatchingService {
     resumeDocId: string,
     jobDocId: string,
     preload?: MatchPreload,
+    embeddingTrace?: EmbeddingTraceItem[],
   ): Promise<MatchResult> {
+    // 已有有效结果直接复用，避免重复调用 LLM
+    const existing = await this.matchRepo.findOne({
+      where: { resumeDocId, jobDocId, staleAt: IsNull() },
+      order: { createdAt: 'DESC' },
+    });
+    if (existing) {
+      console.log(
+        `[Matching] cache hit resume=${resumeDocId.slice(0, 8)} job=${jobDocId.slice(0, 8)} score=${existing.overallScore}`,
+      );
+      return existing;
+    }
+
     try {
-      return await this.runMatchPipeline(resumeDocId, jobDocId, preload);
+      return await this.runMatchPipeline(resumeDocId, jobDocId, preload, embeddingTrace);
     } catch (err) {
       console.error(
         `[Matching] calculateMatch FAILED resume=${resumeDocId?.slice(0, 8)} job=${jobDocId?.slice(0, 8)}:`,
@@ -117,16 +132,30 @@ export class MatchingService {
       systemPrompt: string,
       userMessage: string,
     ) => void,
+    embeddingTrace?: EmbeddingTraceItem[],
   ): Promise<MatchResult> {
+    // 已有有效结果直接复用，避免重复触发 LLM 流式评估
+    const existing = await this.matchRepo.findOne({
+      where: { resumeDocId, jobDocId, staleAt: IsNull() },
+      order: { createdAt: 'DESC' },
+    });
+    if (existing) {
+      console.log(
+        `[Matching] stream cache hit resume=${resumeDocId.slice(0, 8)} job=${jobDocId.slice(0, 8)} score=${existing.overallScore}`,
+      );
+      // 向前端回播已保存的 trace，保持流水线展示一致性
+      if (existing.algorithmTrace) {
+        for (const step of existing.algorithmTrace) {
+          onProgress(step);
+        }
+      }
+      return existing;
+    }
+
     const trace: AlgorithmStep[] = [];
 
     // ━━━ Step 1: Load data ━━━
     const t0 = Date.now();
-    let resumeSkills: DocumentSkill[];
-    let jobSkills: DocumentSkill[];
-    let resumeDoc: Document | null;
-    let jobDoc: Document | null;
-    let skillMetaMap: Map<number, Skill>;
     let person: User | null = null;
     let company: User | null = null;
 
@@ -136,7 +165,7 @@ export class MatchingService {
       status: 'running',
       summary: '正在加载简历和职位数据...',
     });
-    [resumeSkills, jobSkills, resumeDoc, jobDoc] = await Promise.all([
+    const [resumeSkills, jobSkills, resumeDoc, jobDoc] = await Promise.all([
       this.dsRepo.find({
         where: { documentId: resumeDocId },
         relations: ['skill'],
@@ -151,7 +180,7 @@ export class MatchingService {
     const allSkillIds = new Set<number>();
     for (const ds of resumeSkills) allSkillIds.add(ds.skillId);
     for (const ds of jobSkills) allSkillIds.add(ds.skillId);
-    skillMetaMap = new Map<number, Skill>();
+    const skillMetaMap = new Map<number, Skill>();
     if (allSkillIds.size > 0) {
       const skillEntities = await this.skillRepo.findBy({
         id: In([...allSkillIds]),
@@ -214,47 +243,84 @@ export class MatchingService {
       (s) => !usedJobSkillIds.has(s.skillId),
     );
     const usedFuzzyResume = new Set<number>();
-    let embeddingPairs: Array<{ jobSkill: string; resumeSkill: string; similarity: number }> = [];
+
+    // 预热 embedding 缓存：批量获取所有待匹配技能向量，避免逐对调用 API
+    const allFuzzySkillNames = new Set<string>();
+    for (const s of [...resumeRemaining, ...jobRemaining]) {
+      if (s.skillName) allFuzzySkillNames.add(s.skillName);
+    }
+    if (allFuzzySkillNames.size > 0) {
+      try {
+        await this.embeddingService.getEmbeddingBatch([...allFuzzySkillNames]);
+      } catch (err) {
+        console.warn(
+          `[Matching] embedding batch warmup failed: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    const embeddingPairs: Array<{
+      jobSkill: string;
+      resumeSkill: string;
+      similarity: number;
+    }> = [];
     for (const jobSkill of jobRemaining) {
       let best: { rs: DocumentSkill; sim: number } | null = null;
-      let pairsForJob: Array<{ resumeSkill: string; similarity: number }> = [];
+      const pairsForJob: Array<{ resumeSkill: string; similarity: number }> =
+        [];
       for (const rs of resumeRemaining) {
         if (usedFuzzyResume.has(rs.skillId)) continue;
-        // embedding 语义相似度
+        // embedding 语义相似度（已预热缓存，本地命中）
         let sim = 0;
         try {
           sim = await this.embeddingService.semanticSimilarity(
             jobSkill.skillName || '',
             rs.skillName || '',
           );
-        } catch {
-          // embedding API 失败时，保持 sim = 0
+        } catch (err) {
+          console.warn(
+            `[Matching] embedding similarity failed: ${(err as Error).message}`,
+          );
         }
-        pairsForJob.push({ resumeSkill: rs.skillName || rs.skill?.name || '', similarity: sim });
-        if (sim >= 0.5 && (!best || sim > best.sim)) best = { rs, sim };
+        pairsForJob.push({
+          resumeSkill: rs.skillName || rs.skill?.name || '',
+          similarity: sim,
+        });
+        if (
+          sim >= MatchingService.SEMANTIC_MATCH_THRESHOLD &&
+          (!best || sim > best.sim)
+        )
+          best = { rs, sim };
       }
-      embeddingPairs.push({
+      const matchedPair = {
         jobSkill: jobSkill.skillName || jobSkill.skill?.name || '',
         resumeSkill: best?.rs.skillName || best?.rs.skill?.name || '',
         similarity: best?.sim || 0,
-      });
-      // 实时推送当前岗位的语义匹配进度
+      };
+      embeddingPairs.push(matchedPair);
+      // 实时推送当前岗位的语义匹配进度（只发送当前明细和累计数，避免 O(N²) payload）
       onProgress({
         phase: 'embedding_matching',
         label: '语义匹配',
         status: 'running',
         summary: `"${jobSkill.skillName || jobSkill.skill?.name}" × ${pairsForJob.length} 个候选`,
         data: {
-          embeddingPairs: embeddingPairs.map((p) => ({
-            job: p.jobSkill,
-            resume: p.resumeSkill,
-            sim: Math.round(p.similarity * 100),
-          })),
           current: jobSkill.skillName || jobSkill.skill?.name,
+          currentMatch:
+            matchedPair.similarity > 0
+              ? {
+                  job: matchedPair.jobSkill,
+                  resume: matchedPair.resumeSkill,
+                  sim: Math.round(matchedPair.similarity * 100),
+                }
+              : null,
+          matchedSoFar: embeddingPairs.filter(
+            (p) => p.similarity >= MatchingService.SEMANTIC_MATCH_THRESHOLD,
+          ).length,
           detail: pairsForJob.map((p) => ({
             resume: p.resumeSkill,
             sim: Math.round(p.similarity * 100),
-            matched: p.similarity >= 0.5,
+            matched: p.similarity >= MatchingService.SEMANTIC_MATCH_THRESHOLD,
           })),
         },
       });
@@ -279,10 +345,16 @@ export class MatchingService {
       phase: 'embedding_matching',
       label: '语义匹配',
       status: 'done',
-      summary: `${embeddingPairs.filter((p) => p.similarity >= 0.5).length} 项模糊匹配成功`,
+      summary: `${
+        embeddingPairs.filter(
+          (p) => p.similarity >= MatchingService.SEMANTIC_MATCH_THRESHOLD,
+        ).length
+      } 项模糊匹配成功`,
       data: {
         embeddingPairs: embeddingPairs
-          .filter((p) => p.similarity >= 0.5)
+          .filter(
+            (p) => p.similarity >= MatchingService.SEMANTIC_MATCH_THRESHOLD,
+          )
           .map((p) => ({
             job: p.jobSkill,
             resume: p.resumeSkill,
@@ -388,6 +460,7 @@ export class MatchingService {
       matchDetails,
       scoreBreakdown,
       algorithmTrace: trace,
+      embeddingTrace: embeddingTrace ?? null,
       llmAssessment,
     };
 
@@ -441,6 +514,7 @@ export class MatchingService {
       resumeId: string,
       jobId: string,
     ) => void,
+    embeddingTrace?: EmbeddingTraceItem[],
   ): Promise<
     Array<{
       id: string;
@@ -453,12 +527,76 @@ export class MatchingService {
     const pairsInfo = candidates.map((other) => {
       const resumeDoc = isResume ? sourceDoc : other;
       const jobDoc = isResume ? other : sourceDoc;
-      return { resumeDoc, jobDoc, resumeId: resumeDoc.id, jobId: jobDoc.id };
+      return {
+        resumeDoc,
+        jobDoc,
+        resumeId: resumeDoc.id,
+        jobId: jobDoc.id,
+        trace: [] as AlgorithmStep[],
+      };
     });
+
+    // ━━━ Step 0: 检查已有有效结果，避免重复 LLM 调用 ━━━
+    const allDocIds = [
+      ...new Set(pairsInfo.flatMap((p) => [p.resumeDoc.id, p.jobDoc.id])),
+    ];
+    const allPairKeys = pairsInfo.map((p) => ({
+      resumeDocId: p.resumeId,
+      jobDocId: p.jobId,
+    }));
+    const existingMatches = await this.matchRepo.find({
+      where: allPairKeys.map((k) => ({
+        ...k,
+        staleAt: IsNull(),
+      })),
+      order: { createdAt: 'DESC' },
+    });
+    const existingMatchMap = new Map<string, MatchResult>();
+    for (const m of existingMatches) {
+      const key = `${m.resumeDocId}-${m.jobDocId}`;
+      if (!existingMatchMap.has(key)) existingMatchMap.set(key, m);
+    }
+
+    const results: Array<{
+      id: string;
+      overallScore: number;
+      llmAssessment: LlmAssessment | null;
+      resumeId: string;
+      jobId: string;
+    }> = [];
+
+    const missingPairsInfo = pairsInfo.filter((p) => {
+      const key = `${p.resumeId}-${p.jobId}`;
+      const existing = existingMatchMap.get(key);
+      if (existing) {
+        console.log(
+          `[Matching] batch cache hit resume=${p.resumeId.slice(0, 8)} job=${p.jobId.slice(0, 8)} score=${existing.overallScore}`,
+        );
+        // 回播已保存的 trace，让前端流水线有展示
+        if (existing.algorithmTrace) {
+          for (const step of existing.algorithmTrace) {
+            onProgress(step, p.resumeId, p.jobId);
+          }
+        }
+        results.push({
+          id: existing.id,
+          overallScore: existing.overallScore,
+          llmAssessment: existing.llmAssessment,
+          resumeId: p.resumeId,
+          jobId: p.jobId,
+        });
+        return false;
+      }
+      return true;
+    });
+
+    if (missingPairsInfo.length === 0) {
+      return results;
+    }
 
     // ━━━ Step 1: Batch load all data ━━━
     const t0 = Date.now();
-    for (const p of pairsInfo) {
+    for (const p of missingPairsInfo) {
       onProgress(
         {
           phase: 'data_loading',
@@ -471,12 +609,9 @@ export class MatchingService {
       );
     }
 
-    const allDocIds = [
-      ...new Set(pairsInfo.flatMap((p) => [p.resumeDoc.id, p.jobDoc.id])),
-    ];
     const userIds = [
       ...new Set(
-        pairsInfo
+        missingPairsInfo
           .flatMap((p) => [p.resumeDoc.userId, p.jobDoc.userId])
           .filter(Boolean),
       ),
@@ -508,7 +643,7 @@ export class MatchingService {
     }
     const userMap = new Map(allUsers.map((u) => [u.id, u]));
 
-    for (const p of pairsInfo) {
+    for (const p of missingPairsInfo) {
       const resumeSkills = skillsByDoc.get(p.resumeDoc.id) || [];
       const jobSkills = skillsByDoc.get(p.jobDoc.id) || [];
       const dataStep: AlgorithmStep = {
@@ -520,7 +655,7 @@ export class MatchingService {
       };
       onProgress(dataStep, p.resumeId, p.jobId);
       // Stash trace on pairsInfo for later use
-      (p as any).trace = [dataStep];
+      p.trace = [dataStep];
     }
 
     // ━━━ Step 2: Run algorithm matching for each pair ━━━
@@ -539,7 +674,7 @@ export class MatchingService {
     }
     const pairsData: BatchPairData[] = [];
 
-    for (const p of pairsInfo) {
+    for (const p of missingPairsInfo) {
       const t1 = Date.now();
       onProgress(
         {
@@ -583,7 +718,7 @@ export class MatchingService {
         matchDetails,
         resumeId: p.resumeId,
         jobId: p.jobId,
-        trace: [...((p as any).trace || []), skillStep],
+        trace: [...p.trace, skillStep],
       });
     }
 
@@ -616,13 +751,7 @@ export class MatchingService {
     );
 
     // ━━━ Step 4: Save all results ━━━
-    const results: Array<{
-      id: string;
-      overallScore: number;
-      llmAssessment: LlmAssessment | null;
-      resumeId: string;
-      jobId: string;
-    }> = [];
+    // results 数组已在 Step 0 中填入缓存命中的对，这里追加新计算的对
 
     for (let i = 0; i < pairsData.length; i++) {
       const p = pairsData[i];
@@ -674,6 +803,7 @@ export class MatchingService {
         matchDetails: p.matchDetails,
         scoreBreakdown,
         algorithmTrace: trace,
+        embeddingTrace: embeddingTrace ?? null,
         llmAssessment,
       };
 
@@ -710,6 +840,7 @@ export class MatchingService {
     resumeDocId: string,
     jobDocId: string,
     preload?: MatchPreload,
+    embeddingTrace?: EmbeddingTraceItem[],
   ): Promise<MatchResult> {
     const trace: AlgorithmStep[] = [];
 
@@ -822,9 +953,16 @@ export class MatchingService {
             jobSkill.skillName || '',
             rs.skillName || '',
           );
-        } catch {
+        } catch (err) {
+          console.warn(
+            `[Matching] embedding similarity failed: ${(err as Error).message}`,
+          );
         }
-        if (sim >= 0.5 && (!best || sim > best.sim)) best = { rs, sim };
+        if (
+          sim >= MatchingService.SEMANTIC_MATCH_THRESHOLD &&
+          (!best || sim > best.sim)
+        )
+          best = { rs, sim };
       }
       if (best) {
         usedFuzzyResume.add(best.rs.skillId);
@@ -936,6 +1074,7 @@ export class MatchingService {
       matchDetails,
       scoreBreakdown,
       algorithmTrace: trace,
+      embeddingTrace: embeddingTrace ?? null,
       llmAssessment,
     };
 
@@ -1001,6 +1140,7 @@ export class MatchingService {
 
     // Separate cached from missing
     const results: MatchResult[] = [];
+    const missingPairs: Array<{ resumeId: string; jobId: string }> = [];
 
     for (const my of myDocs) {
       for (const other of otherDocs) {
@@ -1008,12 +1148,26 @@ export class MatchingService {
         const jobId = isIndividual ? other.id : my.id;
         const key = `${resumeId}-${jobId}`;
         const cached = matchCache.get(key);
-        if (cached) results.push(cached);
+        if (cached) {
+          results.push(cached);
+        } else {
+          missingPairs.push({ resumeId, jobId });
+        }
       }
     }
 
-    // NOTE: Missing pairs are not computed here — LLM calls are too slow for a
-    // dashboard list. They should be computed via the Pipeline page (streaming).
+    // 后台异步补齐缺失的匹配对，不阻塞 dashboard 返回。
+    // calculateMatch 内部会检查已有结果缓存，避免重复 LLM。
+    if (missingPairs.length > 0) {
+      for (const pair of missingPairs) {
+        this.calculateMatch(pair.resumeId, pair.jobId).catch((err) => {
+          console.error(
+            `[Matching] background fill failed ${pair.resumeId.slice(0, 8)}-${pair.jobId.slice(0, 8)}:`,
+            err.message,
+          );
+        });
+      }
+    }
 
     return this.enrichResults(
       results.sort((a, b) => b.overallScore - a.overallScore),
@@ -1095,7 +1249,11 @@ export class MatchingService {
         const otherSkills = batchMap.get(otherDoc.id) || [];
         const resumeSkills = isResume ? mySkills : otherSkills;
         const jobSkills = isResume ? otherSkills : mySkills;
-        const matchDetails = await this.runSkillMatching(resumeSkills, jobSkills, onEmbeddingProgress);
+        const matchDetails = await this.runSkillMatching(
+          resumeSkills,
+          jobSkills,
+          onEmbeddingProgress,
+        );
         const result = this.calculateAlgorithmScore(
           matchDetails,
           resumeSkills,
@@ -1182,7 +1340,7 @@ export class MatchingService {
 
   async getMatchesByJob(jobDocId: string): Promise<EnrichedMatch[]> {
     return this.enrichResults(
-      (await this.matchRepo.find({ where: { jobDocId } })).sort(
+      (await this.matchRepo.find({ where: { jobDocId, staleAt: IsNull() } })).sort(
         (a, b) => b.overallScore - a.overallScore,
       ),
     );
@@ -1190,7 +1348,7 @@ export class MatchingService {
 
   async getMatchesByResume(resumeDocId: string): Promise<EnrichedMatch[]> {
     return this.enrichResults(
-      (await this.matchRepo.find({ where: { resumeDocId } })).sort(
+      (await this.matchRepo.find({ where: { resumeDocId, staleAt: IsNull() } })).sort(
         (a, b) => b.overallScore - a.overallScore,
       ),
     );
@@ -1257,6 +1415,21 @@ export class MatchingService {
   //  Enrichment
   // ══════════════════════════════════════════════════════════════
 
+  private static getStringField(
+    obj: unknown,
+    ...keys: string[]
+  ): string | undefined {
+    let current: unknown = obj;
+    for (const key of keys) {
+      if (current && typeof current === 'object' && key in current) {
+        current = (current as Record<string, unknown>)[key];
+      } else {
+        return undefined;
+      }
+    }
+    return typeof current === 'string' ? current : undefined;
+  }
+
   private async enrichResults(
     results: MatchResult[],
   ): Promise<EnrichedMatch[]> {
@@ -1289,8 +1462,6 @@ export class MatchingService {
       if (!resumeDoc || !jobDoc) return [];
       const candidate = userMap.get(resumeDoc.userId);
       const company = userMap.get(jobDoc.userId);
-      const jobParsed = (jobDoc.parsedJson as any)?.structured || {};
-      const resumeParsed = (resumeDoc.parsedJson as any)?.structured || {};
       return [
         {
           id: r.id,
@@ -1298,12 +1469,27 @@ export class MatchingService {
           scoreBreakdown: r.scoreBreakdown || null,
           matchDetails: r.matchDetails,
           algorithmTrace: r.algorithmTrace,
+          embeddingTrace: r.embeddingTrace,
           llmAssessment: r.llmAssessment,
           createdAt: r.createdAt,
           resumeDocId: r.resumeDocId,
           resumeFilename: resumeDoc.originalFilename,
-          candidateName: resumeParsed?.name || candidate?.username || '未知',
-          candidateCity: candidate?.city || resumeParsed?.city || '',
+          candidateName:
+            MatchingService.getStringField(
+              resumeDoc.parsedJson,
+              'structured',
+              'name',
+            ) ||
+            candidate?.username ||
+            '未知',
+          candidateCity:
+            candidate?.city ||
+            MatchingService.getStringField(
+              resumeDoc.parsedJson,
+              'structured',
+              'city',
+            ) ||
+            '',
           candidateTopSkills: (skillsByDoc.get(r.resumeDocId) || [])
             .slice(0, 6)
             .map((s) => s.skillName || s.skill?.name || '')
@@ -1312,13 +1498,42 @@ export class MatchingService {
           jobFilename: jobDoc.originalFilename,
           companyName:
             company?.companyName ||
-            jobParsed?.companyName ||
-            jobParsed?.company ||
+            MatchingService.getStringField(
+              jobDoc.parsedJson,
+              'structured',
+              'companyName',
+            ) ||
+            MatchingService.getStringField(
+              jobDoc.parsedJson,
+              'structured',
+              'company',
+            ) ||
             '',
           jobTitle:
-            jobParsed?.jobTitle || jobParsed?.title || jobDoc.originalFilename,
+            MatchingService.getStringField(
+              jobDoc.parsedJson,
+              'structured',
+              'jobTitle',
+            ) ||
+            MatchingService.getStringField(
+              jobDoc.parsedJson,
+              'structured',
+              'title',
+            ) ||
+            jobDoc.originalFilename,
           jobCity:
-            company?.city || jobParsed?.location || jobParsed?.city || '',
+            company?.city ||
+            MatchingService.getStringField(
+              jobDoc.parsedJson,
+              'structured',
+              'location',
+            ) ||
+            MatchingService.getStringField(
+              jobDoc.parsedJson,
+              'structured',
+              'city',
+            ) ||
+            '',
           jobTopSkills: (skillsByDoc.get(r.jobDocId) || [])
             .slice(0, 6)
             .map((s) => s.skillName || s.skill?.name || '')
@@ -1338,6 +1553,8 @@ export class MatchingService {
     advanced: 3,
     expert: 4,
   };
+
+  private static readonly SEMANTIC_MATCH_THRESHOLD = 0.6;
 
   /**
    * 计算算法技能匹配分（双维度）。
@@ -1362,9 +1579,8 @@ export class MatchingService {
     for (const js of jobSkills) {
       const detail = matchDetails.find((d) => d.jobSkillId === js.skillId);
       if (detail) {
-        coverageSum += detail.skillId > 0
-          ? 1.0
-          : Math.abs(detail.skillId) / 100;
+        coverageSum +=
+          detail.skillId > 0 ? 1.0 : Math.abs(detail.skillId) / 100;
       }
     }
     const coverage = jobSkills.length > 0 ? coverageSum / jobSkills.length : 0;
@@ -1377,8 +1593,7 @@ export class MatchingService {
     for (const d of matchDetails) {
       const candLevel =
         MatchingService.PROFICIENCY_LEVEL[d.personProficiency] ?? 2;
-      const reqLevel =
-        MatchingService.PROFICIENCY_LEVEL[d.jobRequirement] ?? 2;
+      const reqLevel = MatchingService.PROFICIENCY_LEVEL[d.jobRequirement] ?? 2;
       adequacySum += Math.min(1.0, candLevel / reqLevel);
       adequacyCount++;
     }
@@ -1481,9 +1696,16 @@ export class MatchingService {
             jobSkill.skillName || '',
             rs.skillName || '',
           );
-        } catch {
+        } catch (err) {
+          console.warn(
+            `[Matching] embedding similarity failed: ${(err as Error).message}`,
+          );
         }
-        if (sim >= 0.5 && (!best || sim > best.sim)) best = { rs, sim };
+        if (
+          sim >= MatchingService.SEMANTIC_MATCH_THRESHOLD &&
+          (!best || sim > best.sim)
+        )
+          best = { rs, sim };
       }
       if (onEmbeddingProgress) {
         onEmbeddingProgress({
@@ -1517,5 +1739,4 @@ export class MatchingService {
 
     return matchDetails;
   }
-
 }

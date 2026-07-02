@@ -4,16 +4,43 @@ import { DocumentSkill } from '../skill/document-skill.entity';
 import { Skill } from '../skill/skill.entity';
 import { Document } from '../document/document.entity';
 import { User } from '../user/user.entity';
-import type {
-  LlmAssessment,
-  AlgorithmStep,
-} from './match-result.entity';
+import type { LlmAssessment, AlgorithmStep } from './match-result.entity';
+
+interface TransferableSkillInput {
+  candidateSkill?: unknown;
+  jobRequirement?: unknown;
+  transferability?: unknown;
+  reasoning?: unknown;
+}
 
 @Injectable()
 export class LlmMatchingService {
-  constructor(
-    private llm: LlmService,
-  ) {}
+  constructor(private llm: LlmService) {}
+
+  private static isTransferableSkill(
+    value: unknown,
+  ): value is TransferableSkillInput {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private static toStringValue(value: unknown): string {
+    return typeof value === 'string' ? value : '';
+  }
+
+  private static toTransferability(value: unknown): 'high' | 'medium' | 'low' {
+    return ['high', 'medium', 'low'].includes(value as string)
+      ? (value as 'high' | 'medium' | 'low')
+      : 'low';
+  }
+
+  private static parseJson(raw: string): Record<string, unknown> {
+    try {
+      const matched = raw.match(/\{[\s\S]*\}/)?.[0] || '{}';
+      return JSON.parse(matched) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
 
   async assessMatch(params: {
     resumeDoc: Document;
@@ -98,37 +125,38 @@ export class LlmMatchingService {
       };
     }
 
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(rawResponse.match(/\{[\s\S]*\}/)?.[0] || '{}');
-    } catch {
-      parsed = {};
-    }
+    const parsed = LlmMatchingService.parseJson(rawResponse);
 
     const assessment: LlmAssessment = {
       overallFit: Math.min(100, Math.max(0, Number(parsed.overallFit) || 0)),
       strengths: Array.isArray(parsed.strengths)
-        ? (parsed.strengths as string[])
+        ? parsed.strengths.filter((s): s is string => typeof s === 'string')
         : [],
-      gaps: Array.isArray(parsed.gaps) ? (parsed.gaps as string[]) : [],
+      gaps: Array.isArray(parsed.gaps)
+        ? parsed.gaps.filter((g): g is string => typeof g === 'string')
+        : [],
       transferableSkills: Array.isArray(parsed.transferableSkills)
-        ? parsed.transferableSkills.map((t) => ({
-            candidateSkill: String(t.candidateSkill || ''),
-            jobRequirement: String(t.jobRequirement || ''),
-            transferability: (['high', 'medium', 'low'].includes(
-              t.transferability,
-            )
-              ? t.transferability
-              : 'low') as 'high' | 'medium' | 'low',
-            reasoning: String(t.reasoning || ''),
-          }))
+        ? parsed.transferableSkills
+            .filter((t) => LlmMatchingService.isTransferableSkill(t))
+            .map((t) => ({
+              candidateSkill: LlmMatchingService.toStringValue(
+                t.candidateSkill,
+              ),
+              jobRequirement: LlmMatchingService.toStringValue(
+                t.jobRequirement,
+              ),
+              transferability: LlmMatchingService.toTransferability(
+                t.transferability,
+              ),
+              reasoning: LlmMatchingService.toStringValue(t.reasoning),
+            }))
         : [],
       readinessMonths: Math.min(
         12,
         Math.max(0, Number(parsed.readinessMonths) || 0),
       ),
       confidence: Math.min(1, Math.max(0, Number(parsed.confidence) || 0.5)),
-      reasoning: String(parsed.reasoning || ''),
+      reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
     };
 
     return {
@@ -280,37 +308,38 @@ export class LlmMatchingService {
       };
     }
 
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(rawResponse.match(/\{[\s\S]*\}/)?.[0] || '{}');
-    } catch {
-      parsed = {};
-    }
+    const parsed = LlmMatchingService.parseJson(rawResponse);
 
     const assessment: LlmAssessment = {
       overallFit: Math.min(100, Math.max(0, Number(parsed.overallFit) || 0)),
       strengths: Array.isArray(parsed.strengths)
-        ? (parsed.strengths as string[])
+        ? parsed.strengths.filter((s): s is string => typeof s === 'string')
         : [],
-      gaps: Array.isArray(parsed.gaps) ? (parsed.gaps as string[]) : [],
+      gaps: Array.isArray(parsed.gaps)
+        ? parsed.gaps.filter((g): g is string => typeof g === 'string')
+        : [],
       transferableSkills: Array.isArray(parsed.transferableSkills)
-        ? parsed.transferableSkills.map((t) => ({
-            candidateSkill: String(t.candidateSkill || ''),
-            jobRequirement: String(t.jobRequirement || ''),
-            transferability: (['high', 'medium', 'low'].includes(
-              t.transferability,
-            )
-              ? t.transferability
-              : 'low') as 'high' | 'medium' | 'low',
-            reasoning: String(t.reasoning || ''),
-          }))
+        ? parsed.transferableSkills
+            .filter((t) => LlmMatchingService.isTransferableSkill(t))
+            .map((t) => ({
+              candidateSkill: LlmMatchingService.toStringValue(
+                t.candidateSkill,
+              ),
+              jobRequirement: LlmMatchingService.toStringValue(
+                t.jobRequirement,
+              ),
+              transferability: LlmMatchingService.toTransferability(
+                t.transferability,
+              ),
+              reasoning: LlmMatchingService.toStringValue(t.reasoning),
+            }))
         : [],
       readinessMonths: Math.min(
         12,
         Math.max(0, Number(parsed.readinessMonths) || 0),
       ),
       confidence: Math.min(1, Math.max(0, Number(parsed.confidence) || 0.5)),
-      reasoning: String(parsed.reasoning || ''),
+      reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
     };
 
     onProgress({
@@ -337,22 +366,20 @@ export class LlmMatchingService {
     };
   }
 
-  private buildMixedContext(
-    params: {
-      resumeDoc: Document;
-      jobDoc: Document;
-      resumeSkills: DocumentSkill[];
-      jobSkills: DocumentSkill[];
-      skillMetaMap: Map<number, Skill>;
-      person?: User | null;
-      company?: User | null;
-      matchDetails: Array<{
-        skillName: string;
-        personProficiency: string;
-        jobRequirement: string;
-      }>;
-    },
-  ): string {
+  private buildMixedContext(params: {
+    resumeDoc: Document;
+    jobDoc: Document;
+    resumeSkills: DocumentSkill[];
+    jobSkills: DocumentSkill[];
+    skillMetaMap: Map<number, Skill>;
+    person?: User | null;
+    company?: User | null;
+    matchDetails: Array<{
+      skillName: string;
+      personProficiency: string;
+      jobRequirement: string;
+    }>;
+  }): string {
     const s: string[] = [];
 
     // Skill tables

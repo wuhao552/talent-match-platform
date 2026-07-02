@@ -60,6 +60,9 @@ export class MatchResult {
   @Column({ name: 'algorithm_trace', type: 'jsonb', nullable: true })
   algorithmTrace: AlgorithmStep[] | null;
 
+  @Column({ name: 'embedding_trace', type: 'jsonb', nullable: true })
+  embeddingTrace: EmbeddingTraceItem[] | null;
+
   @Column({ name: 'llm_assessment', type: 'jsonb', nullable: true })
   llmAssessment: LlmAssessment | null;
 
@@ -88,6 +91,13 @@ export interface ScoreBreakdown {
     coverage: number; // 技能覆盖率 (60%)
     adequacy: number; // 熟练度达标率 (40%)
   };
+}
+
+/** One semantic matching item from the global algorithm prefilter */
+export interface EmbeddingTraceItem {
+  jobSkill: string;
+  bestMatch: string | null;
+  similarity: number;
 }
 
 /** One step in the matching algorithm execution pipeline */

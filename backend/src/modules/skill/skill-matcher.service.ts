@@ -40,9 +40,7 @@ export class SkillMatcherService implements OnModuleInit {
   // 2-gram inverted index: ngram → skill index[]
   private ngramIndex = new Map<string, number[]>();
 
-  constructor(
-    @InjectRepository(Skill) private skillRepo: Repository<Skill>,
-  ) {}
+  constructor(@InjectRepository(Skill) private skillRepo: Repository<Skill>) {}
 
   async onModuleInit() {
     // Load skills from database instead of file

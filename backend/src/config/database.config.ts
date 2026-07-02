@@ -11,6 +11,7 @@ export default registerAs(
     password: process.env.DB_PASSWORD || '123456',
     database: process.env.DB_DATABASE || 'talent_match',
     entities: [__dirname + '/../**/*.entity{.ts,.js}'],
+    migrations: [__dirname + '/../migrations/*{.ts,.js}'],
     synchronize: false, // 已手动同步 schema，避免有数据时列约束约束变更失败
     logging: false,
     poolSize: 25,

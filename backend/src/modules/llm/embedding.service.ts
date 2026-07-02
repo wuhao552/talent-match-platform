@@ -124,9 +124,7 @@ export class EmbeddingService {
       );
     } catch (err) {
       clearTimeout(timeout);
-      this.logger.error(
-        `Embedding API 调用失败: ${(err as Error).message}`,
-      );
+      this.logger.error(`Embedding API 调用失败: ${(err as Error).message}`);
       throw err;
     }
   }
@@ -134,9 +132,7 @@ export class EmbeddingService {
   /**
    * 自动分批调用 API，每批不超过 maxBatchSize 条，结果按输入顺序拼接。
    */
-  private async callEmbeddingApiBatched(
-    texts: string[],
-  ): Promise<number[][]> {
+  private async callEmbeddingApiBatched(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
     const results: number[][] = [];
     for (let i = 0; i < texts.length; i += this.maxBatchSize) {

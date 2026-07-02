@@ -11,7 +11,13 @@ export class LlmLog {
   id: string;
 
   @Column({ name: 'call_type', length: 32 })
-  callType: 'extract_skills' | 'parse_document' | 'generate_explanation';
+  callType:
+    | 'extract_skills'
+    | 'parse_document'
+    | 'parse_job_description'
+    | 'extract_job_skills'
+    | 'assess_match'
+    | 'generate_explanation';
 
   @Column({ length: 64 })
   model: string;

@@ -1,8 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan } from 'typeorm';
-import { createHash } from 'crypto';
-import { LlmCacheEntity } from './llm-cache.entity';
+import { Repository } from 'typeorm';
+import { LlmLog } from './llm-log.entity';
 
 export interface ExtractedSkill {
   name: string;
@@ -26,114 +25,91 @@ export interface LlmCallDetail {
 @Injectable()
 export class LlmService {
   constructor(
-    @InjectRepository(LlmCacheEntity)
-    private cacheRepo: Repository<LlmCacheEntity>,
+    @InjectRepository(LlmLog)
+    private logRepo: Repository<LlmLog>,
   ) {}
 
   // 统一使用 v4-flash
   private readonly flashModel = 'deepseek-v4-flash';
   private readonly proModel = process.env.LLM_MODEL || 'deepseek-v4-flash';
 
-  // Two-tier cache: L1 = in-memory (fast, limited), L2 = database (persistent)
-  private readonly _cache = new Map<
-    string,
-    { value: string; expires: number }
-  >();
-  private readonly CACHE_TTL = 30 * 60 * 1000; // 30 minutes (L1)
-  private readonly CACHE_TTL_DB = 24 * 60 * 60 * 1000; // 24 hours (L2)
-  private readonly CACHE_MAX = 200;
-
-  private cacheKey(method: string, text: string, model: string): string {
-    const hash = createHash('sha256').update(text).digest('hex').slice(0, 16);
-    return `${method}:${model}:${hash}`;
-  }
-
-  /** L1 cache: in-memory */
-  private cacheGetL1(key: string): string | null {
-    const entry = this._cache.get(key);
-    if (!entry) return null;
-    if (Date.now() > entry.expires) {
-      this._cache.delete(key);
-      return null;
-    }
-    return entry.value;
-  }
-
-  private cacheSetL1(key: string, value: string): void {
-    if (this._cache.size >= this.CACHE_MAX) {
-      const oldest = this._cache.keys().next().value;
-      if (oldest) this._cache.delete(oldest);
-    }
-    this._cache.set(key, { value, expires: Date.now() + this.CACHE_TTL });
-  }
-
-  /** L2 cache: database (persistent across restarts) */
-  private async cacheGetL2(key: string): Promise<string | null> {
-    try {
-      const entry = await this.cacheRepo.findOne({ where: { cacheKey: key } });
-      if (!entry) return null;
-      if (Date.now() > entry.expiresAt.getTime()) {
-        await this.cacheRepo.delete({ cacheKey: key });
-        return null;
-      }
-      return entry.response;
-    } catch {
-      return null; // DB errors should not block LLM calls
-    }
-  }
-
-  private async cacheSetL2(
-    key: string,
-    value: string,
+  /**
+   * 统一调用入口：支持流式回调。
+   */
+  private async callLLMWithLog(
     method: string,
+    systemPrompt: string,
+    userMessage: string,
     model: string,
-  ): Promise<void> {
+    onChunk?: (token: string) => void,
+  ): Promise<string> {
+    const startTime = Date.now();
+    let rawResponse: string;
+    let success = true;
+    let errorMessage: string | undefined;
+
     try {
-      const expiresAt = new Date(Date.now() + this.CACHE_TTL_DB);
-      await this.cacheRepo.save(
-        this.cacheRepo.create({
-          cacheKey: key,
-          response: value,
-          method,
+      if (onChunk) {
+        rawResponse = '';
+        for await (const chunk of this.callLLMStream(
+          systemPrompt,
+          userMessage,
           model,
-          expiresAt,
-        }),
-      );
+        )) {
+          if (!chunk.done) onChunk(chunk.token);
+          rawResponse = chunk.fullText;
+        }
+      } else {
+        rawResponse = await this.callLLM(systemPrompt, userMessage, model);
+      }
+    } catch (err) {
+      success = false;
+      errorMessage = err instanceof Error ? err.message : 'LLM 调用失败';
+      this.saveLlmLog({
+        callType: method as any,
+        model,
+        systemPrompt,
+        userMessage,
+        rawResponse: '',
+        success: false,
+        errorMessage,
+        latencyMs: Date.now() - startTime,
+      }).catch(() => {});
+      throw err;
+    }
+
+    this.saveLlmLog({
+      callType: method as any,
+      model,
+      systemPrompt,
+      userMessage,
+      rawResponse,
+      success: true,
+      latencyMs: Date.now() - startTime,
+    }).catch(() => {});
+    return rawResponse;
+  }
+
+  /**
+   * 写入 LLM 调用日志，失败不影响主流程。
+   */
+  private async saveLlmLog(payload: {
+    callType: LlmLog['callType'];
+    model: string;
+    systemPrompt: string;
+    userMessage: string;
+    rawResponse: string;
+    success: boolean;
+    errorMessage?: string;
+    latencyMs: number;
+    tokensUsed?: number;
+    documentId?: string;
+  }): Promise<void> {
+    try {
+      await this.logRepo.save(this.logRepo.create(payload));
     } catch {
-      // DB errors should not block LLM calls
+      // 日志写入失败不应影响 LLM 主流程
     }
-  }
-
-  /** Two-tier cache get: L1 → L2 → miss */
-  private async cacheGet(key: string): Promise<string | null> {
-    const l1 = this.cacheGetL1(key);
-    if (l1 !== null) return l1;
-
-    const l2 = await this.cacheGetL2(key);
-    if (l2 !== null) {
-      this.cacheSetL1(key, l2); // promote to L1
-      return l2;
-    }
-    return null;
-  }
-
-  /** Two-tier cache set: write to both L1 and L2 */
-  private async cacheSet(
-    key: string,
-    value: string,
-    method: string,
-    model: string,
-  ): Promise<void> {
-    this.cacheSetL1(key, value);
-    await this.cacheSetL2(key, value, method, model);
-  }
-
-  /** Periodic cleanup of expired entries */
-  async cleanupExpiredCache(): Promise<number> {
-    const result = await this.cacheRepo.delete({
-      expiresAt: LessThan(new Date()),
-    });
-    return result.affected || 0;
   }
 
   /**
@@ -172,32 +148,13 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     const userMessage = `请从以下文本中提取技能：\n\n${text.slice(0, 8000)}`;
 
     const startTime = Date.now();
-    let rawResponse: string;
-
-    if (onChunk) {
-      rawResponse = '';
-      for await (const chunk of this.callLLMStream(
-        systemPrompt,
-        userMessage,
-        this.flashModel,
-      )) {
-        if (!chunk.done) onChunk(chunk.token);
-        rawResponse = chunk.fullText;
-      }
-    } else {
-      const ck = this.cacheKey('extractSkills', userMessage, this.flashModel);
-      const cached = await this.cacheGet(ck);
-      if (cached) {
-        rawResponse = cached;
-      } else {
-        rawResponse = await this.callLLM(
-          systemPrompt,
-          userMessage,
-          this.flashModel,
-        );
-        await this.cacheSet(ck, rawResponse, 'extractSkills', this.flashModel);
-      }
-    }
+    const rawResponse = await this.callLLMWithLog(
+      'extractSkills',
+      systemPrompt,
+      userMessage,
+      this.flashModel,
+      onChunk,
+    );
 
     const latencyMs = Date.now() - startTime;
 
@@ -254,32 +211,13 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     const userMessage = `请解析以下文档：\n\n${text.slice(0, 8000)}`;
 
     const startTime = Date.now();
-    let rawResponse: string;
-
-    if (onChunk) {
-      rawResponse = '';
-      for await (const chunk of this.callLLMStream(
-        systemPrompt,
-        userMessage,
-        this.flashModel,
-      )) {
-        if (!chunk.done) onChunk(chunk.token);
-        rawResponse = chunk.fullText;
-      }
-    } else {
-      const ck = this.cacheKey('parseDocument', userMessage, this.flashModel);
-      const cached = await this.cacheGet(ck);
-      if (cached) {
-        rawResponse = cached;
-      } else {
-        rawResponse = await this.callLLM(
-          systemPrompt,
-          userMessage,
-          this.flashModel,
-        );
-        await this.cacheSet(ck, rawResponse, 'parseDocument', this.flashModel);
-      }
-    }
+    const rawResponse = await this.callLLMWithLog(
+      'parseDocument',
+      systemPrompt,
+      userMessage,
+      this.flashModel,
+      onChunk,
+    );
 
     const latencyMs = Date.now() - startTime;
 
@@ -335,41 +273,13 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     const userMessage = `请解析以下岗位描述：\n\n${text.slice(0, 8000)}`;
 
     const startTime = Date.now();
-    let rawResponse: string;
-
-    if (onChunk) {
-      rawResponse = '';
-      for await (const chunk of this.callLLMStream(
-        systemPrompt,
-        userMessage,
-        this.flashModel,
-      )) {
-        if (!chunk.done) onChunk(chunk.token);
-        rawResponse = chunk.fullText;
-      }
-    } else {
-      const ck = this.cacheKey(
-        'parseJobDescription',
-        userMessage,
-        this.flashModel,
-      );
-      const cached = await this.cacheGet(ck);
-      if (cached) {
-        rawResponse = cached;
-      } else {
-        rawResponse = await this.callLLM(
-          systemPrompt,
-          userMessage,
-          this.flashModel,
-        );
-        await this.cacheSet(
-          ck,
-          rawResponse,
-          'parseJobDescription',
-          this.flashModel,
-        );
-      }
-    }
+    const rawResponse = await this.callLLMWithLog(
+      'parseJobDescription',
+      systemPrompt,
+      userMessage,
+      this.flashModel,
+      onChunk,
+    );
 
     const latencyMs = Date.now() - startTime;
 
@@ -434,41 +344,13 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     const userMessage = `请从以下岗位描述中提取技能要求：\n\n${text.slice(0, 8000)}`;
 
     const startTime = Date.now();
-    let rawResponse: string;
-
-    if (onChunk) {
-      rawResponse = '';
-      for await (const chunk of this.callLLMStream(
-        systemPrompt,
-        userMessage,
-        this.flashModel,
-      )) {
-        if (!chunk.done) onChunk(chunk.token);
-        rawResponse = chunk.fullText;
-      }
-    } else {
-      const ck = this.cacheKey(
-        'extractJobSkills',
-        userMessage,
-        this.flashModel,
-      );
-      const cached = await this.cacheGet(ck);
-      if (cached) {
-        rawResponse = cached;
-      } else {
-        rawResponse = await this.callLLM(
-          systemPrompt,
-          userMessage,
-          this.flashModel,
-        );
-        await this.cacheSet(
-          ck,
-          rawResponse,
-          'extractJobSkills',
-          this.flashModel,
-        );
-      }
-    }
+    const rawResponse = await this.callLLMWithLog(
+      'extractJobSkills',
+      systemPrompt,
+      userMessage,
+      this.flashModel,
+      onChunk,
+    );
 
     const latencyMs = Date.now() - startTime;
 
@@ -624,7 +506,6 @@ proficiency必须是以下之一：beginner, intermediate, advanced, expert
     onChunk?: (token: string) => void,
     model?: string,
   ): Promise<Record<string, unknown>[]> {
-    const startTime = Date.now();
     let rawResponse = '';
 
     if (onChunk) {

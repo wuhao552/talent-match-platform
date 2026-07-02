@@ -268,12 +268,7 @@ export class AdminService {
   // ==================== Skills ====================
 
   async getSkills(query: SkillFilterDto) {
-    const {
-      page = 1,
-      pageSize = 20,
-      search,
-      category,
-    } = query;
+    const { page = 1, pageSize = 20, search, category } = query;
     const where: Record<string, unknown> = {};
     if (category) where.category = category;
     const [items, total] = await this.skillRepo.findAndCount({

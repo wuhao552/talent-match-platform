@@ -2,10 +2,10 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { LlmService } from './llm.service';
 import { EmbeddingService } from './embedding.service';
-import { LlmCacheEntity } from './llm-cache.entity';
+import { LlmLog } from './llm-log.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([LlmCacheEntity])],
+  imports: [TypeOrmModule.forFeature([LlmLog])],
   providers: [LlmService, EmbeddingService],
   exports: [LlmService, EmbeddingService],
 })

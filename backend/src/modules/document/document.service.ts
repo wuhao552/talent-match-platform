@@ -1,8 +1,14 @@
-import { Injectable, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, DataSource } from 'typeorm';
 import { extname } from 'path';
 import * as fsp from 'fs/promises';
+import { createHash } from 'crypto';
 import { Document, DocType, FileFormat } from './document.entity';
 import { DocumentSkill } from '../skill/document-skill.entity';
 import { Skill } from '../skill/skill.entity';
@@ -126,12 +132,57 @@ export class DocumentService {
     await this.docRepo.remove(doc);
   }
 
+  private async computeContentHash(filePath: string): Promise<string> {
+    const buf = await fsp.readFile(filePath);
+    return createHash('sha256').update(buf).digest('hex');
+  }
+
+  /**
+   * 检查文档内容是否发生变化。未变化时直接复用已有解析结果，避免重复 LLM 调用。
+   */
+  private async shouldSkipReparse(doc: Document): Promise<boolean> {
+    if (doc.status !== 'parsed' || !doc.contentHash) return false;
+    try {
+      const currentHash = await this.computeContentHash(doc.filePath);
+      return currentHash === doc.contentHash;
+    } catch {
+      return false;
+    }
+  }
+
   async parseDocumentStream(
     documentId: string,
     onProgress?: ProgressCallback,
     onChunk?: (agent: string, token: string) => void,
   ) {
     const doc = await this.findById(documentId);
+
+    // 内容未变化时直接复用已有解析结果
+    if (await this.shouldSkipReparse(doc)) {
+      console.log(`[Document] skip reparse ${doc.id} (content unchanged)`);
+      // 回播已保存的 pipeline 步骤，保持前端体验一致
+      const storedPipeline = ((doc.parsedJson as any)?.pipeline || []) as Array<{
+        agent: string;
+        status: string;
+        summary: string;
+        data?: Record<string, unknown>;
+        error?: string;
+        timestamp: number;
+      }>;
+      for (const step of storedPipeline) {
+        onProgress?.(step as any);
+      }
+      // 仍触发自动匹配（会检查缓存，不会重复 LLM）
+      this.matchingService.autoMatchAfterParse(doc.id).catch((err) => {
+        console.error(`[Document] Auto-match failed for ${doc.id}:`, err.message);
+      });
+      return {
+        success: true,
+        data: doc.parsedJson || {},
+        summary: '文档内容未变化，复用已有解析结果',
+      } as AgentResult;
+    }
+
     doc.status = 'parsing';
     await this.docRepo.save(doc);
 
@@ -153,6 +204,16 @@ export class DocumentService {
   async parseDocument(documentId: string): Promise<void> {
     // 独立获取文档，避免使用可能过期的实体引用
     const doc = await this.findById(documentId);
+
+    // 内容未变化时直接复用已有解析结果
+    if (await this.shouldSkipReparse(doc)) {
+      console.log(`[Document] skip reparse ${doc.id} (content unchanged)`);
+      this.matchingService.autoMatchAfterParse(doc.id).catch((err) => {
+        console.error(`[Document] Auto-match failed for ${doc.id}:`, err.message);
+      });
+      return;
+    }
+
     doc.status = 'parsing';
     try {
       await this.docRepo.save(doc);
@@ -172,7 +233,10 @@ export class DocumentService {
 
       // 解析完成后自动触发匹配（fire-and-forget）
       this.matchingService.autoMatchAfterParse(doc.id).catch((err) => {
-        console.error(`[Document] Auto-match failed for ${doc.id}:`, err.message);
+        console.error(
+          `[Document] Auto-match failed for ${doc.id}:`,
+          err.message,
+        );
       });
     } catch (err) {
       // Use QueryBuilder to avoid TypeORM entity tracker updating stale relations
@@ -190,6 +254,7 @@ export class DocumentService {
 
   private async saveParseResult(doc: Document, result: AgentResult) {
     const parsedText = result.data['parsedText'] as string;
+    const contentHash = await this.computeContentHash(doc.filePath);
 
     const llmParseDetail = result.data['llmParseDetail'];
     const skillLlmDetail = result.data['skillLlmDetail'];
@@ -234,7 +299,7 @@ export class DocumentService {
       await manager
         .createQueryBuilder()
         .update(Document)
-        .set({ parsedText, parsedJson, status: 'parsed' } as any)
+        .set({ parsedText, parsedJson, contentHash, status: 'parsed' })
         .where('id = :id', { id: doc.id })
         .execute();
 
@@ -249,7 +314,10 @@ export class DocumentService {
       ];
       const existingSkills =
         mappedIds.length > 0
-          ? await manager.findBy(Skill, mappedIds.map((id: number) => ({ id })))
+          ? await manager.findBy(
+              Skill,
+              mappedIds.map((id: number) => ({ id })),
+            )
           : [];
       const existingSkillMap = new Map(existingSkills.map((s) => [s.id, s]));
 
@@ -301,13 +369,12 @@ export class DocumentService {
             confidence: es?.confidence || 0.95,
             sourceText: es?.sourceText || '',
             extractionMethod: 'llm',
-            category:
-              inferCategory(es?.name || ms.name || '') ||
-              (null as any),
+            category: inferCategory(es?.name || ms.name || '') || (null as any),
           }),
         );
       }
-      if (docSkillsToSave.length > 0) await manager.save(DocumentSkill, docSkillsToSave);
+      if (docSkillsToSave.length > 0)
+        await manager.save(DocumentSkill, docSkillsToSave);
 
       // 批量更新 skill category
       if (skillsToUpdateCategory.length > 0) {
@@ -345,8 +412,7 @@ export class DocumentService {
               unmatchedToCreate.push(
                 manager.create(Skill, {
                   name,
-                  category:
-                    inferCategory(name) || undefined,
+                  category: inferCategory(name) || undefined,
                 } as Skill),
               );
             }

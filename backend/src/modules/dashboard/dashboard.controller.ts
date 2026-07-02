@@ -14,6 +14,7 @@ interface EnrichedMatch {
   scoreBreakdown: any;
   matchDetails: any;
   algorithmTrace: any;
+  embeddingTrace: any;
   llmAssessment: any;
   createdAt: Date;
   resumeDocId: string;
@@ -40,9 +41,7 @@ export class DashboardController {
 
   @Get()
   @UseGuards(JwtAuthGuard)
-  async getDashboard(
-    @CurrentUser() user: { id: string; role: string },
-  ) {
+  async getDashboard(@CurrentUser() user: { id: string; role: string }) {
     const isIndividual = user.role === 'individual';
 
     // ── Query 1: 用户文档 ──
@@ -66,7 +65,11 @@ export class DashboardController {
 
     // 我方文档 ID（按角色筛选类型）
     const myDocIds = documents
-      .filter((d) => d.status === 'parsed' && d.docType === (isIndividual ? 'resume' : 'job_description'))
+      .filter(
+        (d) =>
+          d.status === 'parsed' &&
+          d.docType === (isIndividual ? 'resume' : 'job_description'),
+      )
       .map((d) => d.id);
 
     // ── Query 2 & 3: 技能 + 匹配结果（并行） ──
@@ -137,7 +140,9 @@ export class DashboardController {
     }
     // 如果新增了用户 ID，再查一次（通常很少）
     const existingUserIds = new Set(otherUsers.map((u) => u.id));
-    const missingUserIds = [...allUserIds].filter((id) => !existingUserIds.has(id));
+    const missingUserIds = [...allUserIds].filter(
+      (id) => !existingUserIds.has(id),
+    );
     if (missingUserIds.length > 0) {
       const extraUsers = await this.userRepo.findByIds(missingUserIds);
       otherUsers.push(...extraUsers);
@@ -175,6 +180,7 @@ export class DashboardController {
           scoreBreakdown: r.scoreBreakdown || null,
           matchDetails: r.matchDetails,
           algorithmTrace: r.algorithmTrace,
+          embeddingTrace: r.embeddingTrace,
           llmAssessment: r.llmAssessment,
           createdAt: r.createdAt,
           resumeDocId: r.resumeDocId,

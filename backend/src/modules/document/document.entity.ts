@@ -42,6 +42,9 @@ export class Document {
   @Column({ name: 'parsed_json', type: 'jsonb', nullable: true })
   parsedJson: Record<string, unknown>;
 
+  @Column({ name: 'content_hash', type: 'varchar', length: 64, nullable: true })
+  contentHash: string | null;
+
   @Column({ type: 'varchar', length: 20, default: 'uploaded' })
   status: DocStatus;
 

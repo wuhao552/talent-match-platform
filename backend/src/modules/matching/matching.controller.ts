@@ -157,7 +157,11 @@ export class MatchingController {
 
       // 阶段一：算法分预筛 Top-3
       const TOP_K = 3;
-      const embeddingResults: Array<{ jobSkill: string; bestMatch: string | null; similarity: number }> = [];
+      const embeddingResults: Array<{
+        jobSkill: string;
+        bestMatch: string | null;
+        similarity: number;
+      }> = [];
       send('progress', {
         phase: 'algorithm_prefilter',
         label: '算法预筛',
@@ -169,7 +173,7 @@ export class MatchingController {
         TOP_K,
         (step) => {
           send('progress', step);
-          if (step.data?.jobSkill && step.data?.matchedResume) {
+          if (step.data?.jobSkill) {
             embeddingResults.push({
               jobSkill: step.data.jobSkill as string,
               bestMatch: (step.data.matchedResume as string) || null,
@@ -184,6 +188,12 @@ export class MatchingController {
         label: '算法预筛',
         status: 'done',
         summary: `算法分排序完成，选出 Top-${candidates.length}`,
+      });
+      send('progress', {
+        phase: 'embedding_matching',
+        label: '语义匹配',
+        status: 'done',
+        summary: `${embeddingResults.filter((r) => r.bestMatch).length} 项语义匹配`,
         data: { embeddingResults },
       });
 
@@ -241,6 +251,7 @@ export class MatchingController {
                 resumeId,
                 jobId,
               }),
+            embeddingResults,
           );
           for (const r of results) {
             send('match_complete', {
@@ -287,6 +298,7 @@ export class MatchingController {
                       resumeId,
                       jobId,
                     }),
+                  embeddingResults,
                 );
                 send('match_complete', {
                   matchId: result.id,
