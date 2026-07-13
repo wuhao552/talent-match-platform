@@ -136,7 +136,7 @@ export function Dashboard() {
                 >
                   <CardContent className="flex items-center justify-between p-5">
                     <div className="flex items-center gap-4">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary-soft">
                         {isPending ? (
                           <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                         ) : (
@@ -203,7 +203,7 @@ export function Dashboard() {
                         </button>
                       )}
                       <button
-                        className="rounded p-1.5 text-muted-foreground/40 hover:bg-red-50 hover:text-red-500 transition-colors"
+                        className="rounded p-1.5 text-gray-400 hover:bg-[#fef2f2] hover:text-red-500 transition-colors"
                         onClick={(e) => { e.stopPropagation(); handleDelete(resume.id, parsed.name || resume.originalFilename) }}
                         title="删除简历"
                       >
@@ -283,7 +283,7 @@ export function Dashboard() {
                         </button>
                       )}
                       <button
-                        className="rounded p-1 text-muted-foreground/40 hover:bg-red-50 hover:text-red-500 transition-colors"
+                        className="rounded p-1 text-gray-400 hover:bg-[#fef2f2] hover:text-red-500 transition-colors"
                         onClick={(e) => { e.stopPropagation(); handleDelete(job.id, (job.parsedJson as any)?.structured?.title || job.originalFilename) }}
                         title="删除职位"
                       >
