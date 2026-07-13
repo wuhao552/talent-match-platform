@@ -42,5 +42,5 @@ function AppRoutes() {
 }
 
 export default function App() {
-  return (<BrowserRouter><AuthProvider><AppRoutes /><Toaster /></AuthProvider></BrowserRouter>)
+  return (<BrowserRouter basename="/admin"><AuthProvider><AppRoutes /><Toaster /></AuthProvider></BrowserRouter>)
 }
