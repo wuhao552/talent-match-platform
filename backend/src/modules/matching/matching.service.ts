@@ -85,7 +85,12 @@ export class MatchingService {
     }
 
     try {
-      return await this.runMatchPipeline(resumeDocId, jobDocId, preload, embeddingTrace);
+      return await this.runMatchPipeline(
+        resumeDocId,
+        jobDocId,
+        preload,
+        embeddingTrace,
+      );
     } catch (err) {
       console.error(
         `[Matching] calculateMatch FAILED resume=${resumeDocId?.slice(0, 8)} job=${jobDocId?.slice(0, 8)}:`,
@@ -1340,17 +1345,17 @@ export class MatchingService {
 
   async getMatchesByJob(jobDocId: string): Promise<EnrichedMatch[]> {
     return this.enrichResults(
-      (await this.matchRepo.find({ where: { jobDocId, staleAt: IsNull() } })).sort(
-        (a, b) => b.overallScore - a.overallScore,
-      ),
+      (
+        await this.matchRepo.find({ where: { jobDocId, staleAt: IsNull() } })
+      ).sort((a, b) => b.overallScore - a.overallScore),
     );
   }
 
   async getMatchesByResume(resumeDocId: string): Promise<EnrichedMatch[]> {
     return this.enrichResults(
-      (await this.matchRepo.find({ where: { resumeDocId, staleAt: IsNull() } })).sort(
-        (a, b) => b.overallScore - a.overallScore,
-      ),
+      (
+        await this.matchRepo.find({ where: { resumeDocId, staleAt: IsNull() } })
+      ).sort((a, b) => b.overallScore - a.overallScore),
     );
   }
 

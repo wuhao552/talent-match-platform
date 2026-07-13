@@ -8,7 +8,7 @@
 |------|------|
 | 框架 | NestJS 11 (Node.js) |
 | 语言 | TypeScript |
-| 数据库 | PostgreSQL (TypeORM) |
+| 数据库 | 人大金仓 KingbaseES V9（PostgreSQL 兼容模式，TypeORM） |
 | LLM | DeepSeek API (文档解析 / 技能提取 / 语义匹配) |
 | 语义匹配 | Embedding 向量相似度 |
 | 认证 | JWT + Passport |
@@ -31,10 +31,10 @@ LLM_API_KEY=your_deepseek_api_key
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-v4-pro
 
-# PostgreSQL 配置
+# 人大金仓 KingbaseES 配置（PostgreSQL 兼容模式，使用 postgres 驱动）
 DB_HOST=localhost
-DB_PORT=5432
-DB_USERNAME=postgres
+DB_PORT=54321
+DB_USERNAME=system
 DB_PASSWORD=123456
 DB_DATABASE=talent_match
 ```
@@ -110,7 +110,7 @@ AppModule
 1. **文本提取** — 读取 PDF（pdf-parse）、DOCX（mammoth）或纯文本
 2. **DocumentParserAgent** — 调用 LLM 解析结构化字段（姓名、邮箱、电话、教育、经历）
 3. **SkillExtractorAgent** — 调用 LLM 提取 `{name, proficiency}` 技能列表（使用 flash 模型）
-4. **SkillMatcherService** — 将提取的技能名称映射到 PostgreSQL 中的规范技能 ID
+4. **SkillMatcherService** — 将提取的技能名称映射到 KingbaseES 中的规范技能 ID
 
 步骤 2 和 3 并行执行。流水线通过 SSE 暴露：`GET /api/documents/:id/parse-stream?token=<jwt>`
 

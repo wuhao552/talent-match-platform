@@ -103,9 +103,13 @@ export class DocumentService {
     return docs;
   }
 
-  async findById(id: string): Promise<Document> {
+  async findById(id: string, userId?: string): Promise<Document> {
     const doc = await this.docRepo.findOne({ where: { id } });
     if (!doc) throw new NotFoundException('文档不存在');
+    // 传入 userId 时校验文档归属，防止越权访问
+    if (userId && doc.userId !== userId) {
+      throw new NotFoundException('无权访问该文档');
+    }
     return doc;
   }
 
@@ -161,7 +165,8 @@ export class DocumentService {
     if (await this.shouldSkipReparse(doc)) {
       console.log(`[Document] skip reparse ${doc.id} (content unchanged)`);
       // 回播已保存的 pipeline 步骤，保持前端体验一致
-      const storedPipeline = ((doc.parsedJson as any)?.pipeline || []) as Array<{
+      const storedPipeline = ((doc.parsedJson as any)?.pipeline ||
+        []) as Array<{
         agent: string;
         status: string;
         summary: string;
@@ -174,7 +179,10 @@ export class DocumentService {
       }
       // 仍触发自动匹配（会检查缓存，不会重复 LLM）
       this.matchingService.autoMatchAfterParse(doc.id).catch((err) => {
-        console.error(`[Document] Auto-match failed for ${doc.id}:`, err.message);
+        console.error(
+          `[Document] Auto-match failed for ${doc.id}:`,
+          err.message,
+        );
       });
       return {
         success: true,
@@ -191,6 +199,21 @@ export class DocumentService {
       onProgress,
       onChunk,
     );
+
+    // 解析失败时不保存 parsed 结果，标记为 failed
+    if (!result.success) {
+      await this.docRepo
+        .createQueryBuilder()
+        .update(Document)
+        .set({
+          status: 'failed',
+          errorMessage: result.error || result.summary || '解析失败',
+        } as any)
+        .where('id = :id', { id: doc.id })
+        .execute();
+      return result;
+    }
+
     await this.saveParseResult(doc, result);
 
     // 解析完成后自动触发匹配（fire-and-forget）
@@ -209,7 +232,10 @@ export class DocumentService {
     if (await this.shouldSkipReparse(doc)) {
       console.log(`[Document] skip reparse ${doc.id} (content unchanged)`);
       this.matchingService.autoMatchAfterParse(doc.id).catch((err) => {
-        console.error(`[Document] Auto-match failed for ${doc.id}:`, err.message);
+        console.error(
+          `[Document] Auto-match failed for ${doc.id}:`,
+          err.message,
+        );
       });
       return;
     }
@@ -229,6 +255,9 @@ export class DocumentService {
 
     try {
       const result = await this.orchestrator.runParsePipeline(doc);
+      if (!result.success) {
+        throw new Error(result.error || result.summary || '解析失败');
+      }
       await this.saveParseResult(doc, result);
 
       // 解析完成后自动触发匹配（fire-and-forget）

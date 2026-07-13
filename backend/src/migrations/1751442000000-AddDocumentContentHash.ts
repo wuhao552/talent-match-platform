@@ -1,8 +1,6 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class AddDocumentContentHash1751442000000
-  implements MigrationInterface
-{
+export class AddDocumentContentHash1751442000000 implements MigrationInterface {
   name = 'AddDocumentContentHash1751442000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
@@ -15,9 +13,7 @@ export class AddDocumentContentHash1751442000000
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(
-      `DROP INDEX IF EXISTS idx_documents_content_hash`,
-    );
+    await queryRunner.query(`DROP INDEX IF EXISTS idx_documents_content_hash`);
     await queryRunner.query(
       `ALTER TABLE documents DROP COLUMN IF EXISTS content_hash`,
     );

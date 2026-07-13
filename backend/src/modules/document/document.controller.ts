@@ -12,6 +12,7 @@ import {
   UseInterceptors,
   UploadedFile,
   UploadedFiles,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
@@ -135,21 +136,32 @@ export class DocumentController {
 
   @Get(':id')
   @UseGuards(JwtAuthGuard)
-  async get(@Param('id') id: string) {
-    const doc = await this.documentService.findById(id);
+  async get(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: { id: string },
+  ) {
+    const doc = await this.documentService.findById(id, user.id);
     return { code: 200, message: 'ok', data: doc };
   }
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
-  async delete(@Param('id') id: string, @CurrentUser() user: { id: string }) {
+  async delete(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: { id: string },
+  ) {
     await this.documentService.delete(id, user.id);
     return { code: 200, message: '删除成功', data: null };
   }
 
   @Post(':id/parse')
   @UseGuards(JwtAuthGuard)
-  async parse(@Param('id') id: string) {
+  async parse(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: { id: string },
+  ) {
+    // 校验文档归属后再触发解析
+    await this.documentService.findById(id, user.id);
     // Fire-and-forget: parse in background, return immediately
     this.documentService
       .parseDocument(id)
@@ -159,7 +171,11 @@ export class DocumentController {
 
   @Get(':id/skills')
   @UseGuards(JwtAuthGuard)
-  async getSkills(@Param('id') id: string) {
+  async getSkills(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: { id: string },
+  ) {
+    await this.documentService.findById(id, user.id);
     const skills = await this.documentService.getDocumentSkills(id);
     return { code: 200, message: 'ok', data: skills };
   }
@@ -207,7 +223,7 @@ export class DocumentController {
     };
 
     try {
-      const doc = await this.documentService.findById(id);
+      const doc = await this.documentService.findById(id, userId);
       send('start', { documentId: id, filename: doc.originalFilename, userId });
 
       // Skip re-parsing if already parsed (e.g. background parseDocument finished first)

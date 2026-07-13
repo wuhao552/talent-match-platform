@@ -1,8 +1,6 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class AddMatchResultEmbeddingTrace1720000000000
-  implements MigrationInterface
-{
+export class AddMatchResultEmbeddingTrace1720000000000 implements MigrationInterface {
   name = 'AddMatchResultEmbeddingTrace1720000000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
