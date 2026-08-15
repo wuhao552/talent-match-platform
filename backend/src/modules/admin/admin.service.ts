@@ -21,12 +21,17 @@ import {
   type AuditTargetType,
 } from './admin-audit-log.entity';
 import { DocumentService } from '../document/document.service';
+import { Job } from '../job/job.entity';
+import { Application } from '../application/application.entity';
+import { NotificationService } from '../notification/notification.service';
 import type {
   UserFilterDto,
   DocumentFilterDto,
   SkillFilterDto,
   MatchFilterDto,
   LlmLogFilterDto,
+  JobAdminFilterDto,
+  ApplicationAdminFilterDto,
 } from './admin.dto';
 
 @Injectable()
@@ -39,7 +44,12 @@ export class AdminService {
     @InjectRepository(LlmLog) private llmLogRepo: Repository<LlmLog>,
     @InjectRepository(AdminAuditLog)
     private auditRepo: Repository<AdminAuditLog>,
+    @InjectRepository(Job)
+    private jobRepo: Repository<Job>,
+    @InjectRepository(Application)
+    private appRepo: Repository<Application>,
     private documentService: DocumentService,
+    private notificationService: NotificationService,
   ) {}
 
   private userSelect = {
@@ -388,6 +398,89 @@ export class AdminService {
         byCallType: [],
       };
     }
+  }
+
+  // ==================== Jobs ====================
+
+  async getJobs(query: JobAdminFilterDto) {
+    const { page = 1, pageSize = 20, status, search } = query;
+    const qb = this.jobRepo
+      .createQueryBuilder('j')
+      .leftJoinAndSelect('j.enterprise', 'enterprise');
+    if (status) qb.andWhere('j.status = :status', { status });
+    if (search) {
+      qb.andWhere('(j.title ILIKE :s OR j.company_name ILIKE :s)', {
+        s: `%${search}%`,
+      });
+    }
+    qb.orderBy('j.createdAt', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize);
+    const [items, total] = await qb.getManyAndCount();
+    return { items, total, page, pageSize };
+  }
+
+  async getJobDetail(id: string) {
+    const job = await this.jobRepo.findOne({
+      where: { id },
+      relations: ['enterprise'],
+    });
+    if (!job) throw new NotFoundException('岗位不存在');
+    return job;
+  }
+
+  async updateJobStatus(id: string, status: string) {
+    const job = await this.jobRepo.findOne({ where: { id } });
+    if (!job) throw new NotFoundException('岗位不存在');
+    job.status = status as Job['status'];
+    return this.jobRepo.save(job);
+  }
+
+  async deleteJob(id: string) {
+    const job = await this.jobRepo.findOne({ where: { id } });
+    if (!job) throw new NotFoundException('岗位不存在');
+    await this.jobRepo.remove(job);
+  }
+
+  // ==================== Applications ====================
+
+  async getApplications(query: ApplicationAdminFilterDto) {
+    const { page = 1, pageSize = 20, jobId, status, search } = query;
+    const qb = this.appRepo
+      .createQueryBuilder('a')
+      .leftJoinAndSelect('a.job', 'job')
+      .leftJoinAndSelect('a.applicant', 'applicant');
+    if (jobId) qb.andWhere('a.job_id = :jobId', { jobId });
+    if (status) qb.andWhere('a.status = :status', { status });
+    if (search) {
+      qb.andWhere('(job.title ILIKE :s OR applicant.username ILIKE :s)', {
+        s: `%${search}%`,
+      });
+    }
+    qb.orderBy('a.createdAt', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize);
+    const [items, total] = await qb.getManyAndCount();
+    return { items, total, page, pageSize };
+  }
+
+  async getApplicationDetail(id: string) {
+    const app = await this.appRepo.findOne({
+      where: { id },
+      relations: ['job', 'applicant'],
+    });
+    if (!app) throw new NotFoundException('投递记录不存在');
+    return app;
+  }
+
+  // ==================== Notifications ====================
+
+  async broadcastNotification(data: {
+    type: 'system' | 'match' | 'application' | 'message' | 'job';
+    title: string;
+    content: string;
+  }) {
+    return this.notificationService.broadcast(data);
   }
 
   // ==================== Audit ====================

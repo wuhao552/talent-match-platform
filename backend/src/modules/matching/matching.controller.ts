@@ -29,7 +29,17 @@ export class MatchingController {
 
   @Post('calculate')
   @UseGuards(JwtAuthGuard)
-  async calculate(@Body() body: { resumeDocId: string; jobDocId: string }) {
+  async calculate(
+    @Body() body: { resumeDocId: string; jobDocId: string },
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    // 校验用户至少拥有简历或岗位中的一个文档,防止对任意文档触发 LLM 匹配
+    await this.matchingService.assertPairAccess(
+      body.resumeDocId,
+      body.jobDocId,
+      user.id,
+      user.role,
+    );
     const data = await this.matchingService.calculateMatch(
       body.resumeDocId,
       body.jobDocId,
@@ -53,21 +63,33 @@ export class MatchingController {
 
   @Get('results/:id')
   @UseGuards(JwtAuthGuard)
-  async getResult(@Param('id') id: string) {
+  async getResult(
+    @Param('id') id: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    await this.matchingService.assertResultAccess(id, user.id, user.role);
     const data = await this.matchingService.getResult(id);
     return { code: 200, message: 'ok', data };
   }
 
   @Get('by-job/:jobDocId')
   @UseGuards(JwtAuthGuard)
-  async getByJob(@Param('jobDocId') jobDocId: string) {
+  async getByJob(
+    @Param('jobDocId') jobDocId: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    await this.matchingService.assertDocAccess(jobDocId, user.id, user.role);
     const data = await this.matchingService.getMatchesByJob(jobDocId);
     return { code: 200, message: 'ok', data };
   }
 
   @Get('by-resume/:resumeDocId')
   @UseGuards(JwtAuthGuard)
-  async getByResume(@Param('resumeDocId') resumeDocId: string) {
+  async getByResume(
+    @Param('resumeDocId') resumeDocId: string,
+    @CurrentUser() user: { id: string; role: string },
+  ) {
+    await this.matchingService.assertDocAccess(resumeDocId, user.id, user.role);
     const data = await this.matchingService.getMatchesByResume(resumeDocId);
     return { code: 200, message: 'ok', data };
   }
@@ -84,8 +106,9 @@ export class MatchingController {
       res.status(401).json({ code: 401, message: '缺少 token' });
       return;
     }
+    let payload: { sub: string; role?: string };
     try {
-      this.jwtService.verify(token);
+      payload = this.jwtService.verify<{ sub: string; role?: string }>(token);
     } catch {
       res.status(401).json({ code: 401, message: 'token 无效' });
       return;
@@ -101,6 +124,13 @@ export class MatchingController {
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
     try {
+      // 校验用户至少拥有简历或岗位中的一个文档
+      await this.matchingService.assertPairAccess(
+        resumeId,
+        jobId,
+        payload.sub,
+        payload.role,
+      );
       send('start', { resumeId, jobId });
       const result = await this.matchingService.calculateMatchStream(
         resumeId,
@@ -135,8 +165,9 @@ export class MatchingController {
       res.status(401).json({ code: 401, message: '缺少 token' });
       return;
     }
+    let payload: { sub: string; role?: string };
     try {
-      this.jwtService.verify(token);
+      payload = this.jwtService.verify<{ sub: string; role?: string }>(token);
     } catch {
       res.status(401).json({ code: 401, message: 'token 无效' });
       return;
@@ -152,7 +183,8 @@ export class MatchingController {
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
     try {
-      const doc = await this.documentService.findById(docId);
+      // 校验文档归属,防止对任意文档触发完整 LLM 匹配流水线
+      const doc = await this.documentService.findById(docId, payload.sub);
       const isResume = doc.docType === 'resume';
 
       // 阶段一：算法分预筛 Top-3

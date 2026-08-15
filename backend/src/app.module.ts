@@ -1,3 +1,7 @@
+// 必须先于任何模块装饰器求值加载 .env——
+// auth/matching/document 等模块在 import 阶段读取 process.env.JWT_SECRET,
+// 若此处不先加载,模块级取值永远是 undefined,只能依赖硬编码兜底(不安全)。
+import 'dotenv/config';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -14,6 +18,11 @@ import { LlmModule } from './modules/llm/llm.module';
 import { AgentModule } from './agents/agent.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { JobModule } from './modules/job/job.module';
+import { ApplicationModule } from './modules/application/application.module';
+import { NotificationModule } from './modules/notification/notification.module';
+import { MessageModule } from './modules/message/message.module';
+import { AiAssistantModule } from './modules/ai-assistant/ai-assistant.module';
 
 @Module({
   imports: [
@@ -46,6 +55,11 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     AgentModule,
     AdminModule,
     DashboardModule,
+    JobModule,
+    ApplicationModule,
+    NotificationModule,
+    MessageModule,
+    AiAssistantModule,
   ],
 })
 export class AppModule {}

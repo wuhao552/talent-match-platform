@@ -17,13 +17,23 @@ async function bootstrap() {
   app.use(
     compression({
       filter: (req: any, res: any) => {
-        // Skip compression for SSE responses — compression buffers output, breaking event-stream
+        // Skip compression for SSE responses — compression buffers output, breaking event-stream。
+        // 注意:中间件阶段 Content-Type 尚未设置,需按 Accept 头(EventSource 会发送
+        // Accept: text/event-stream)或已写入的 header 判断,不能只看 res.getHeader()。
+        const accept = String(req.headers?.accept || '');
+        if (accept.includes('text/event-stream')) return false;
         if (res.getHeader('Content-Type') === 'text/event-stream') return false;
         return compression.filter(req, res);
       },
     }),
   );
-  app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
+  app.useGlobalPipes(
+    new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      transformOptions: { enableImplicitConversion: true },
+    }),
+  );
 
   const port = process.env.PORT ?? 3100;
   await app.listen(port);

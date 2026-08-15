@@ -73,7 +73,7 @@ export class DocumentController {
       docType as 'resume' | 'job_description',
       user.id,
     );
-    // Don't parse here — SSE /graph/:id will trigger parseDocumentStream instead
+    // 上传后由前端调用 /api/documents/:id/parse-stream 触发解析
     return { code: 200, message: '上传成功', data: doc };
   }
 
@@ -122,7 +122,10 @@ export class DocumentController {
 
   @Get('skills/batch')
   @UseGuards(JwtAuthGuard)
-  async getSkillsBatch(@Query('ids') ids: string | string[]) {
+  async getSkillsBatch(
+    @Query('ids') ids: string | string[],
+    @CurrentUser() user: { id: string },
+  ) {
     const idList = Array.isArray(ids)
       ? ids
       : (ids || '')
@@ -130,6 +133,8 @@ export class DocumentController {
           .map((s) => s.trim())
           .filter(Boolean);
     if (idList.length === 0) return { code: 200, message: 'ok', data: [] };
+    // 校验全部文档归属,防止越权批量读取他人文档技能
+    await this.documentService.assertOwnedBatch(idList, user.id);
     const skills = await this.documentService.getDocumentSkillsBatch(idList);
     return { code: 200, message: 'ok', data: skills };
   }
@@ -247,6 +252,7 @@ export class DocumentController {
           id,
           onProgress,
           onChunk,
+          force === 'true',
         );
       }
 

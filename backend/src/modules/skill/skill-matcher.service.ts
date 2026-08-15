@@ -43,7 +43,11 @@ export class SkillMatcherService implements OnModuleInit {
   constructor(@InjectRepository(Skill) private skillRepo: Repository<Skill>) {}
 
   async onModuleInit() {
-    // Load skills from database instead of file
+    await this.reload();
+  }
+
+  /** 从数据库重新加载技能并重建 n-gram 索引(新建技能后调用,保持索引与库一致) */
+  async reload(): Promise<void> {
     const rows = await this.skillRepo.find({
       select: ['id', 'name', 'coreName'],
     });
@@ -52,6 +56,7 @@ export class SkillMatcherService implements OnModuleInit {
       name: r.name,
       core: r.coreName || stripSuffixes(normalize(r.name || '')),
     }));
+    this.ngramIndex = new Map();
     this.buildNgramIndex();
 
     if (this.skills.length === 0) {

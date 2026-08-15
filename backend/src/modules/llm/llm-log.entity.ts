@@ -12,10 +12,10 @@ export class LlmLog {
 
   @Column({ name: 'call_type', length: 32 })
   callType:
-    | 'extract_skills'
-    | 'parse_document'
-    | 'parse_job_description'
-    | 'extract_job_skills'
+    | 'extractSkills'
+    | 'parseDocument'
+    | 'parseJobDescription'
+    | 'extractJobSkills'
     | 'assess_match'
     | 'generate_explanation';
 

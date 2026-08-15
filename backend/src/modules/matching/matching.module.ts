@@ -13,6 +13,11 @@ import { SkillModule } from '../skill/skill.module';
 import { LlmModule } from '../llm/llm.module';
 import { DocumentModule } from '../document/document.module';
 
+const jwtSecret = process.env.JWT_SECRET;
+if (!jwtSecret) {
+  throw new Error('JWT_SECRET 环境变量未配置，请在 backend/.env 中设置');
+}
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -26,7 +31,7 @@ import { DocumentModule } from '../document/document.module';
     LlmModule,
     forwardRef(() => DocumentModule),
     JwtModule.register({
-      secret: process.env.JWT_SECRET || 'talent-match-jwt-secret-key-2026',
+      secret: jwtSecret,
       signOptions: { expiresIn: '7d' },
     }),
   ],

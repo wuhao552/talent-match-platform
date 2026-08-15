@@ -2,14 +2,15 @@
  * Migration: Drop redundant columns from match_results and skills tables
  * Run: npx tsx scripts/drop-redundant-columns.ts
  */
+import 'dotenv/config';
 import { DataSource } from 'typeorm';
 
 async function main() {
   const ds = new DataSource({
     type: 'postgres',
-    host: process.env.DB_HOST || '123.207.218.243',
-    port: parseInt(process.env.DB_PORT || '54321', 10),
-    username: process.env.DB_USERNAME || 'kingbase',
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT || '5432', 10),
+    username: process.env.DB_USERNAME || 'postgres',
     password: process.env.DB_PASSWORD || '123456',
     database: process.env.DB_DATABASE || 'talent_match',
   });

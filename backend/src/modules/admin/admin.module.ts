@@ -11,9 +11,13 @@ import { Skill } from '../skill/skill.entity';
 import { MatchResult } from '../matching/match-result.entity';
 import { LlmLog } from '../llm/llm-log.entity';
 import { AdminAuditLog } from './admin-audit-log.entity';
+import { Job } from '../job/job.entity';
+import { Application } from '../application/application.entity';
+import { Notification } from '../notification/notification.entity';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { DocumentModule } from '../document/document.module';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
   imports: [
@@ -24,8 +28,12 @@ import { DocumentModule } from '../document/document.module';
       MatchResult,
       LlmLog,
       AdminAuditLog,
+      Job,
+      Application,
+      Notification,
     ]),
     DocumentModule,
+    NotificationModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

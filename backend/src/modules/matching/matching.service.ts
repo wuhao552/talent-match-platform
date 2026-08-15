@@ -1,4 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, IsNull } from 'typeorm';
 import {
@@ -38,6 +42,8 @@ export interface EnrichedMatch {
   jobTitle: string;
   jobCity: string;
   jobTopSkills: string[];
+  /** JD 结构化摘要(薪资/职责/要求/福利等),供匹配双方查看,无需访问对方文档 */
+  jobStructured: Record<string, unknown> | null;
 }
 
 /** Pre-loaded data to avoid per-pair DB queries in recommend() */
@@ -92,28 +98,13 @@ export class MatchingService {
         embeddingTrace,
       );
     } catch (err) {
+      // 失败时不要持久化 0 分结果——否则会被缓存命中逻辑永久当作"有效"结果,
+      // 后续匹配永远返回 0 分。直接抛出让调用方感知失败并允许重试。
       console.error(
         `[Matching] calculateMatch FAILED resume=${resumeDocId?.slice(0, 8)} job=${jobDocId?.slice(0, 8)}:`,
         (err as Error).message,
       );
-      return this.matchRepo.save(
-        this.matchRepo.create({
-          resumeDocId,
-          jobDocId,
-          overallScore: 0,
-          skillMatchScore: 0,
-          cityMatchBonus: 0,
-          matchDetails: [],
-          algorithmTrace: null,
-          llmAssessment: null,
-          scoreBreakdown: {
-            algorithmScore: 0,
-            llmScore: 0,
-            overallScore: 0,
-            matchStatus: 'fallback',
-          },
-        }),
-      );
+      throw err;
     }
   }
 
@@ -469,20 +460,7 @@ export class MatchingService {
       llmAssessment,
     };
 
-    let match = await this.matchRepo.findOne({
-      where: { resumeDocId, jobDocId },
-      order: { createdAt: 'DESC' },
-    });
-    if (match) {
-      Object.assign(match, entityData, { staleAt: null });
-      match = await this.matchRepo.save(match);
-    } else {
-      match = await this.matchRepo.save(
-        this.matchRepo.create({ resumeDocId, jobDocId, ...entityData }),
-      );
-    }
-
-    return match;
+    return this.saveMatchResult(resumeDocId, jobDocId, entityData);
   }
 
   /**
@@ -812,22 +790,7 @@ export class MatchingService {
         llmAssessment,
       };
 
-      let match = await this.matchRepo.findOne({
-        where: { resumeDocId: p.resumeId, jobDocId: p.jobId },
-        order: { createdAt: 'DESC' },
-      });
-      if (match) {
-        Object.assign(match, entityData, { staleAt: null });
-        match = await this.matchRepo.save(match);
-      } else {
-        match = await this.matchRepo.save(
-          this.matchRepo.create({
-            resumeDocId: p.resumeId,
-            jobDocId: p.jobId,
-            ...entityData,
-          }),
-        );
-      }
+      const match = await this.saveMatchResult(p.resumeId, p.jobId, entityData);
 
       results.push({
         id: match.id,
@@ -1083,17 +1046,8 @@ export class MatchingService {
       llmAssessment,
     };
 
-    const match = await this.matchRepo.findOne({
-      where: { resumeDocId, jobDocId },
-      order: { createdAt: 'DESC' },
-    });
-    if (match) {
-      Object.assign(match, entityData, { staleAt: null });
-      return this.matchRepo.save(match);
-    }
-    return this.matchRepo.save(
-      this.matchRepo.create({ resumeDocId, jobDocId, ...entityData }),
-    );
+    const match = await this.saveMatchResult(resumeDocId, jobDocId, entityData);
+    return match;
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -1321,8 +1275,8 @@ export class MatchingService {
       .createQueryBuilder('mr')
       .leftJoinAndSelect('mr.resumeDoc', 'resume')
       .leftJoinAndSelect('mr.jobDoc', 'job')
-      .where('resume.userId = :userId', { userId })
-      .orWhere('job.userId = :userId', { userId })
+      .where('(resume.userId = :userId OR job.userId = :userId)', { userId })
+      .andWhere('mr.staleAt IS NULL')
       .orderBy('mr.createdAt', 'DESC')
       .getMany();
     const seen = new Set<string>();
@@ -1543,6 +1497,11 @@ export class MatchingService {
             .slice(0, 6)
             .map((s) => s.skillName || s.skill?.name || '')
             .filter(Boolean),
+          // JD 结构化内容随匹配结果一起返回:求职者无权直接读取企业文档,
+          // 但应能看到该岗位的完整信息(薪资/职责/要求/福利等)
+          jobStructured:
+            (jobDoc.parsedJson as { structured?: Record<string, unknown> } | null)
+              ?.structured || null,
         },
       ];
     });
@@ -1619,6 +1578,80 @@ export class MatchingService {
   // ══════════════════════════════════════════════════════════════
   //  Utilities
   // ══════════════════════════════════════════════════════════════
+
+  /** 校验单个文档归属(admin 放行),用于匹配相关端点的越权防护 */
+  async assertDocAccess(
+    docId: string,
+    userId: string,
+    role?: string,
+  ): Promise<void> {
+    if (role === 'admin') return;
+    const doc = await this.docRepo.findOne({
+      where: { id: docId },
+      select: ['id', 'userId'],
+    });
+    if (!doc) throw new NotFoundException('文档不存在');
+    if (doc.userId !== userId) throw new ForbiddenException('无权访问该文档');
+  }
+
+  /** 校验匹配对访问权:用户必须拥有简历或岗位中的至少一个文档(admin 放行) */
+  async assertPairAccess(
+    resumeDocId: string,
+    jobDocId: string,
+    userId: string,
+    role?: string,
+  ): Promise<void> {
+    if (role === 'admin') return;
+    const docs = await this.docRepo.find({
+      where: { id: In([resumeDocId, jobDocId]) },
+      select: ['id', 'userId'],
+    });
+    if (docs.length !== 2) throw new NotFoundException('文档不存在');
+    if (!docs.some((d) => d.userId === userId)) {
+      throw new ForbiddenException('无权访问该文档');
+    }
+  }
+
+  /** 校验匹配结果访问权 */
+  async assertResultAccess(
+    id: string,
+    userId: string,
+    role?: string,
+  ): Promise<void> {
+    if (role === 'admin') return;
+    const m = await this.matchRepo.findOne({ where: { id } });
+    if (!m) throw new NotFoundException('匹配结果不存在');
+    await this.assertPairAccess(m.resumeDocId, m.jobDocId, userId, role);
+  }
+
+  /** 保存匹配结果:唯一约束冲突时回读已有行,避免并发计算产生重复行 */
+  private async saveMatchResult(
+    resumeDocId: string,
+    jobDocId: string,
+    entityData: Partial<MatchResult>,
+  ): Promise<MatchResult> {
+    try {
+      const match = await this.matchRepo.findOne({
+        where: { resumeDocId, jobDocId },
+        order: { createdAt: 'DESC' },
+      });
+      if (match) {
+        Object.assign(match, entityData, { staleAt: null });
+        return this.matchRepo.save(match);
+      }
+      return this.matchRepo.save(
+        this.matchRepo.create({ resumeDocId, jobDocId, ...entityData }),
+      );
+    } catch (err) {
+      if ((err as { code?: string })?.code === '23505') {
+        return (await this.matchRepo.findOne({
+          where: { resumeDocId, jobDocId },
+          order: { createdAt: 'DESC' },
+        }))!;
+      }
+      throw err;
+    }
+  }
 
   private inferImportance(proficiency: string): string {
     const idx = ['beginner', 'intermediate', 'advanced', 'expert'].indexOf(

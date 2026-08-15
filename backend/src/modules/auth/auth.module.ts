@@ -7,12 +7,17 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './jwt.strategy';
 
+const jwtSecret = process.env.JWT_SECRET;
+if (!jwtSecret) {
+  throw new Error('JWT_SECRET 环境变量未配置，请在 backend/.env 中设置');
+}
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([User]),
     PassportModule,
     JwtModule.register({
-      secret: process.env.JWT_SECRET || 'talent-match-jwt-secret-key-2026',
+      secret: jwtSecret,
       signOptions: { expiresIn: '7d' },
     }),
   ],

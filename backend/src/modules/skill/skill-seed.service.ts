@@ -35,28 +35,28 @@ export class SkillSeedService implements OnModuleInit {
       .filter(Boolean);
     const expectedCount = lines.length;
 
-    const totalExisting = await this.skillRepo.count();
+    const existing = await this.skillRepo.find({ select: ['id'] });
+    const existingIds = new Set(existing.map((s) => s.id));
+    const missingCount = lines.filter((_, i) => !existingIds.has(i)).length;
 
-    if (totalExisting >= expectedCount) {
+    if (missingCount === 0) {
       console.log(
-        `[SkillSeed] ${totalExisting} skills already loaded, skipping`,
+        `[SkillSeed] ${existingIds.size} skills already loaded, skipping`,
       );
       return;
     }
 
-    if (totalExisting > 0) {
-      console.log(
-        `[SkillSeed] Incomplete seed detected (existing=${totalExisting}, expected=${expectedCount}). Re-seeding with CASCADE...`,
-      );
-      await this.skillRepo.query('TRUNCATE TABLE skills CASCADE');
-    }
-
-    console.log(`[SkillSeed] Loading ${expectedCount} skills...`);
+    // 只补插缺失 id 的技能,绝不 TRUNCATE——
+    // 旧实现 TRUNCATE ... CASCADE 会连带清空 document_skills(用户的技能标注数据)
+    console.log(
+      `[SkillSeed] Incomplete seed detected (existing=${existingIds.size}, expected=${expectedCount}). Inserting ${missingCount} missing skills...`,
+    );
 
     let inserted = 0;
     const batch: Skill[] = [];
 
     for (let i = 0; i < lines.length; i++) {
+      if (existingIds.has(i)) continue;
       const id = i;
       const name = lines[i];
 
@@ -73,7 +73,7 @@ export class SkillSeedService implements OnModuleInit {
         await this.skillRepo.save(batch);
         inserted += batch.length;
         batch.length = 0;
-        console.log(`[SkillSeed] Inserted ${inserted}/${expectedCount}`);
+        console.log(`[SkillSeed] Inserted ${inserted}/${missingCount}`);
       }
     }
 

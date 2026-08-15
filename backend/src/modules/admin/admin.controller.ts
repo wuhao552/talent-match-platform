@@ -27,7 +27,11 @@ import {
   LlmLogFilterDto,
   TrendQueryDto,
   UpdateUserStatusDto,
+  JobAdminFilterDto,
+  ApplicationAdminFilterDto,
 } from './admin.dto';
+import { UpdateJobStatusDto } from '../job/job.dto';
+import { BroadcastNotificationDto } from '../notification/notification.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -152,5 +156,56 @@ export class AdminController {
   async getLlmLogDetail(@Param('id') id: string) {
     const data = await this.adminService.getLlmLogDetail(id);
     return { code: 200, message: 'ok', data };
+  }
+
+  // ==================== Jobs ====================
+
+  @Get('jobs')
+  async getJobs(@Query() query: JobAdminFilterDto) {
+    const data = await this.adminService.getJobs(query);
+    return { code: 200, message: 'ok', data };
+  }
+
+  @Get('jobs/:id')
+  async getJobDetail(@Param('id') id: string) {
+    const data = await this.adminService.getJobDetail(id);
+    return { code: 200, message: 'ok', data };
+  }
+
+  @Patch('jobs/:id/status')
+  async updateJobStatus(
+    @Param('id') id: string,
+    @Body() body: UpdateJobStatusDto,
+  ) {
+    const data = await this.adminService.updateJobStatus(id, body.status);
+    return { code: 200, message: '岗位状态已更新', data };
+  }
+
+  @Delete('jobs/:id')
+  async deleteJob(@Param('id') id: string) {
+    await this.adminService.deleteJob(id);
+    return { code: 200, message: '岗位已删除', data: null };
+  }
+
+  // ==================== Applications ====================
+
+  @Get('applications')
+  async getApplications(@Query() query: ApplicationAdminFilterDto) {
+    const data = await this.adminService.getApplications(query);
+    return { code: 200, message: 'ok', data };
+  }
+
+  @Get('applications/:id')
+  async getApplicationDetail(@Param('id') id: string) {
+    const data = await this.adminService.getApplicationDetail(id);
+    return { code: 200, message: 'ok', data };
+  }
+
+  // ==================== Notifications ====================
+
+  @Post('notifications/broadcast')
+  async broadcastNotification(@Body() body: BroadcastNotificationDto) {
+    const count = await this.adminService.broadcastNotification(body);
+    return { code: 200, message: `已广播给 ${count} 位用户`, data: { count } };
   }
 }

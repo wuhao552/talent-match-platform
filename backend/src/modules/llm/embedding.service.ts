@@ -7,8 +7,9 @@ import { Injectable, Logger } from '@nestjs/common';
 @Injectable()
 export class EmbeddingService {
   private readonly logger = new Logger(EmbeddingService.name);
-  private readonly apiKey =
-    process.env.EMBEDDING_API_KEY || 'sk-c839b65fc06c4b90b8f6d63e2b527e85';
+  // API Key 仅从环境变量读取（backend/.env 中配置 EMBEDDING_API_KEY），
+  // 避免密钥硬编码在源码中；未配置时 embedding 调用会明确失败并降级为纯字符串匹配。
+  private readonly apiKey = process.env.EMBEDDING_API_KEY || '';
   private readonly baseUrl =
     process.env.EMBEDDING_BASE_URL ||
     'https://dashscope.aliyuncs.com/compatible-mode/v1';
@@ -92,6 +93,9 @@ export class EmbeddingService {
   private readonly maxBatchSize = 10;
 
   private async callEmbeddingApi(texts: string[]): Promise<number[][]> {
+    if (!this.apiKey) {
+      throw new Error('EMBEDDING_API_KEY 未配置，无法调用 Embedding API');
+    }
     const url = `${this.baseUrl}/embeddings`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);

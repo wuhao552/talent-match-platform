@@ -49,9 +49,12 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const user = await this.userRepo.findOne({
-      where: { username: dto.username },
-    });
+    // passwordHash 已配置 select: false，需显式 addSelect 才能读取
+    const user = await this.userRepo
+      .createQueryBuilder('user')
+      .addSelect('user.passwordHash')
+      .where('user.username = :username', { username: dto.username })
+      .getOne();
     if (!user) {
       throw new UnauthorizedException('用户名或密码错误');
     }
@@ -59,6 +62,10 @@ export class AuthService {
     const valid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!valid) {
       throw new UnauthorizedException('用户名或密码错误');
+    }
+
+    if (user.status !== 'active') {
+      throw new UnauthorizedException('账号已被禁用，请联系管理员');
     }
 
     const token = this.generateToken(user);
@@ -76,7 +83,11 @@ export class AuthService {
     oldPassword: string,
     newPassword: string,
   ) {
-    const user = await this.userRepo.findOne({ where: { id: userId } });
+    const user = await this.userRepo
+      .createQueryBuilder('user')
+      .addSelect('user.passwordHash')
+      .where('user.id = :id', { id: userId })
+      .getOne();
     if (!user) throw new UnauthorizedException('用户不存在');
     const valid = await bcrypt.compare(oldPassword, user.passwordHash);
     if (!valid) throw new BadRequestException('原密码错误');

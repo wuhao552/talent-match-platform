@@ -22,7 +22,7 @@ export class User {
   @Column({ unique: true, length: 64 })
   username: string;
 
-  @Column({ name: 'password_hash', length: 256 })
+  @Column({ name: 'password_hash', length: 256, select: false })
   passwordHash: string;
 
   @Column({ type: 'varchar', length: 20 })

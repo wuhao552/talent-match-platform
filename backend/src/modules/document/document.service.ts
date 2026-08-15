@@ -19,7 +19,9 @@ import {
 } from '../../agents/orchestrator.agent';
 import { GraphLayoutService } from '../graph/graph-layout.service';
 import { inferCategory } from '../skill/skill.utils';
+import { SkillMatcherService } from '../skill/skill-matcher.service';
 import { MatchingService } from '../matching/matching.service';
+import { JobService } from '../job/job.service';
 import type { AgentResult } from '../../agents/agent.interface';
 
 function decodeFileName(name: string): string {
@@ -44,8 +46,10 @@ export class DocumentService {
     private orchestrator: OrchestratorAgent,
     private graphLayout: GraphLayoutService,
     private dataSource: DataSource,
+    private skillMatcher: SkillMatcherService,
     @Inject(forwardRef(() => MatchingService))
     private matchingService: MatchingService,
+    private jobService: JobService,
   ) {}
 
   async create(
@@ -120,15 +124,44 @@ export class DocumentService {
     });
   }
 
+  /** 校验一批文档全部属于该用户(用于批量读取技能等场景,防止越权) */
+  async assertOwnedBatch(documentIds: string[], userId: string): Promise<void> {
+    if (documentIds.length === 0) return;
+    const ownedCount = await this.docRepo.count({
+      where: { id: In(documentIds), userId },
+    });
+    if (ownedCount !== documentIds.length) {
+      throw new NotFoundException('无权访问部分文档');
+    }
+  }
+
   async delete(id: string, userId: string): Promise<void> {
     const doc = await this.findById(id);
     if (doc.userId !== userId) throw new NotFoundException('无权操作');
 
-    // Delete related match results (FKs to this document)
+    // 1. 删除关联的匹配结果(FK 引用)
     await this.matchRepo.delete({ resumeDocId: id });
     await this.matchRepo.delete({ jobDocId: id });
 
-    // Clean up the uploaded file from disk
+    // 2. 删除文档技能关联(FK 引用,无级联)
+    await this.dsRepo.delete({ documentId: id });
+
+    // 3. 如果是 JD 文档,同时清理 jobs 表中通过 documentId 关联的草稿岗位
+    //    (已发布的岗位不自动删除,避免误删在招职位)
+    await this.dataSource
+      .createQueryBuilder()
+      .delete()
+      .from('jobs')
+      .where('document_id = :id AND status = :status', { id, status: 'draft' })
+      .execute()
+      .catch((err) =>
+        console.error(
+          `[Document] Failed to clean jobs for ${id}:`,
+          err.message,
+        ),
+      );
+
+    // 4. 清理磁盘文件
     if (doc.filePath) {
       await fsp.unlink(doc.filePath).catch(() => {});
     }
@@ -158,11 +191,12 @@ export class DocumentService {
     documentId: string,
     onProgress?: ProgressCallback,
     onChunk?: (agent: string, token: string) => void,
+    force = false,
   ) {
     const doc = await this.findById(documentId);
 
-    // 内容未变化时直接复用已有解析结果
-    if (await this.shouldSkipReparse(doc)) {
+    // 内容未变化时直接复用已有解析结果(force=true 时强制重跑,用于重新提取技能等场景)
+    if (!force && (await this.shouldSkipReparse(doc))) {
       console.log(`[Document] skip reparse ${doc.id} (content unchanged)`);
       // 回播已保存的 pipeline 步骤，保持前端体验一致
       const storedPipeline = ((doc.parsedJson as any)?.pipeline ||
@@ -189,6 +223,11 @@ export class DocumentService {
         data: doc.parsedJson || {},
         summary: '文档内容未变化，复用已有解析结果',
       } as AgentResult;
+    }
+
+    // 并发守卫:已有解析任务进行中时拒绝重复触发,避免双份 LLM 调用互相覆盖
+    if (doc.status === 'parsing') {
+      throw new Error('文档正在解析中，请稍候重试');
     }
 
     doc.status = 'parsing';
@@ -237,6 +276,12 @@ export class DocumentService {
           err.message,
         );
       });
+      return;
+    }
+
+    // 并发守卫:已有解析任务进行中时跳过,避免重复 LLM 调用
+    if (doc.status === 'parsing') {
+      console.log(`[Document] skip parse ${doc.id} (already parsing)`);
       return;
     }
 
@@ -321,6 +366,16 @@ export class DocumentService {
 
     const skills = (result.data['extractedSkills'] as any[]) || [];
     const mappedSkills = (result.data['mappedSkills'] as any[]) || [];
+    // 提取技能与已匹配技能长度/顺序可能不一致,必须按名称关联,不能按下标对齐
+    const extractedByName = new Map<string, any>();
+    for (const es of skills) {
+      if (es?.name && !extractedByName.has(es.name)) {
+        extractedByName.set(es.name, es);
+      }
+    }
+
+    // 本次是否新建了技能(用于解析完成后刷新内存索引)
+    let createdNewSkills = false;
 
     // 使用事务包裹核心写入，减少 DB 往返
     await this.dataSource.transaction(async (manager) => {
@@ -352,12 +407,10 @@ export class DocumentService {
 
       // 4. 批量创建缺失的技能
       const skillsToCreate: Skill[] = [];
-      for (let i = 0; i < mappedSkills.length; i++) {
-        const ms = mappedSkills[i];
+      for (const ms of mappedSkills) {
         if (savedSkillIds.has(ms.skillId) || existingSkillMap.has(ms.skillId))
           continue;
-        const es = skills[i];
-        const skillName = es?.name || ms.name || '';
+        const skillName = ms.name || '';
         skillsToCreate.push(
           manager.create(Skill, {
             id: ms.skillId,
@@ -369,19 +422,22 @@ export class DocumentService {
       if (skillsToCreate.length > 0) {
         const created = await manager.save(Skill, skillsToCreate);
         for (const s of created) existingSkillMap.set(s.id, s);
+        createdNewSkills = true;
       }
 
       // 5. 收集需要更新 category 的技能（批量）
       const skillsToUpdateCategory: Skill[] = [];
 
-      // 6. 批量创建 DocumentSkill
+      // 6. 批量创建 DocumentSkill(按名称关联提取结果,避免下标错位)
       const docSkillsToSave: DocumentSkill[] = [];
-      for (let i = 0; i < mappedSkills.length; i++) {
-        const ms = mappedSkills[i];
+      for (const ms of mappedSkills) {
         if (savedSkillIds.has(ms.skillId)) continue;
         savedSkillIds.add(ms.skillId);
-        const es = skills[i];
         const skill = existingSkillMap.get(ms.skillId);
+        const extractedName = (ms as { extractedName?: string }).extractedName;
+        const es = extractedName
+          ? extractedByName.get(extractedName)
+          : undefined;
         if (skill && !skill.category) {
           const inferred = inferCategory(skill.name || '');
           if (inferred) {
@@ -389,16 +445,18 @@ export class DocumentService {
             skillsToUpdateCategory.push(skill);
           }
         }
+        const canonicalName = skill?.name || ms.name || '';
         docSkillsToSave.push(
           manager.create(DocumentSkill, {
             documentId: doc.id,
             skillId: ms.skillId,
-            skillName: es?.name || ms.name || undefined,
+            skillName: canonicalName || undefined,
             proficiency: ms.proficiency || 'intermediate',
             confidence: es?.confidence || 0.95,
             sourceText: es?.sourceText || '',
             extractionMethod: 'llm',
-            category: inferCategory(es?.name || ms.name || '') || (null as any),
+            category:
+              skill?.category || inferCategory(canonicalName) || (null as any),
           }),
         );
       }
@@ -435,11 +493,19 @@ export class DocumentService {
           );
 
           const unmatchedToCreate: Skill[] = [];
+          // skills.id 为显式主键(种子数据 id=行号,非自增),新建技能必须手动分配 id,
+          // 否则主键 NULL 插入失败会被外层 catch 静默吞掉
+          const maxRow = await manager
+            .createQueryBuilder(Skill, 's')
+            .select('MAX(s.id)', 'max')
+            .getRawOne();
+          let nextSkillId = Math.max(0, Number(maxRow?.max) || 0) + 1;
           for (const u of validUnmatched) {
             const name = u.name.trim();
             if (!byLowerName.has(name.toLowerCase())) {
               unmatchedToCreate.push(
                 manager.create(Skill, {
+                  id: nextSkillId++,
                   name,
                   category: inferCategory(name) || undefined,
                 } as Skill),
@@ -449,6 +515,7 @@ export class DocumentService {
           if (unmatchedToCreate.length > 0) {
             const created = await manager.save(Skill, unmatchedToCreate);
             for (const s of created) byLowerName.set(s.name.toLowerCase(), s);
+            createdNewSkills = true;
           }
 
           const unmatchedDocSkills: DocumentSkill[] = [];
@@ -487,6 +554,18 @@ export class DocumentService {
         );
       }
     });
+
+    // 新建技能后刷新内存匹配索引,使新技能可被后续解析匹配(否则永远走 unmatched 分支)
+    if (createdNewSkills) {
+      await this.skillMatcher
+        .reload()
+        .catch((err) =>
+          console.error(
+            `[Document] Skill matcher reload failed for ${doc.id}:`,
+            (err as Error).message,
+          ),
+        );
+    }
 
     // Fire-and-forget: pre-compute graph layout coordinates
     const allSkillsForGraph = [
@@ -531,6 +610,21 @@ export class DocumentService {
           err.message,
         ),
       );
+
+    // Fire-and-forget: JD 文档解析完成后,同步/创建对应 Job 记录(打通工作台与岗位管理)
+    if (doc.docType === 'job_description') {
+      const structuredInfo = (parsedJson as any)?.structured;
+      if (structuredInfo) {
+        this.jobService
+          .syncFromDocument(doc.id, doc.userId, structuredInfo)
+          .catch((err) =>
+            console.error(
+              `[Document] Job sync failed for ${doc.id}:`,
+              err.message,
+            ),
+          );
+      }
+    }
   }
 
   async getDocumentSkills(documentId: string): Promise<DocumentSkill[]> {

@@ -101,3 +101,27 @@ export class UpdateUserStatusDto {
   @IsIn(['active', 'disabled'])
   status: string;
 }
+
+export class JobAdminFilterDto extends PaginationDto {
+  @IsOptional()
+  @IsIn(['draft', 'published', 'closed', 'archived'])
+  status?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+}
+
+export class ApplicationAdminFilterDto extends PaginationDto {
+  @IsOptional()
+  @IsString()
+  jobId?: string;
+
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+}

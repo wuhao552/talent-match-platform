@@ -42,6 +42,49 @@ export class LlmMatchingService {
     }
   }
 
+  /**
+   * 将 LLM 返回的 JSON 构建为评估对象。overallFit 缺失/非法时返回 null,
+   * 由调用方走 fallback(纯算法分),而不是当作 0 分把最终分"腰斩"。
+   */
+  private static buildAssessment(
+    parsed: Record<string, unknown>,
+  ): LlmAssessment | null {
+    const fit = Number(parsed.overallFit);
+    if (!Number.isFinite(fit)) return null;
+
+    return {
+      overallFit: Math.min(100, Math.max(0, fit)),
+      strengths: Array.isArray(parsed.strengths)
+        ? parsed.strengths.filter((s): s is string => typeof s === 'string')
+        : [],
+      gaps: Array.isArray(parsed.gaps)
+        ? parsed.gaps.filter((g): g is string => typeof g === 'string')
+        : [],
+      transferableSkills: Array.isArray(parsed.transferableSkills)
+        ? parsed.transferableSkills
+            .filter((t) => LlmMatchingService.isTransferableSkill(t))
+            .map((t) => ({
+              candidateSkill: LlmMatchingService.toStringValue(
+                t.candidateSkill,
+              ),
+              jobRequirement: LlmMatchingService.toStringValue(
+                t.jobRequirement,
+              ),
+              transferability: LlmMatchingService.toTransferability(
+                t.transferability,
+              ),
+              reasoning: LlmMatchingService.toStringValue(t.reasoning),
+            }))
+        : [],
+      readinessMonths: Math.min(
+        12,
+        Math.max(0, Number(parsed.readinessMonths) || 0),
+      ),
+      confidence: Math.min(1, Math.max(0, Number(parsed.confidence) || 0.5)),
+      reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
+    };
+  }
+
   async assessMatch(params: {
     resumeDoc: Document;
     jobDoc: Document;
@@ -56,7 +99,7 @@ export class LlmMatchingService {
       jobRequirement: string;
     }>;
   }): Promise<{
-    assessment: LlmAssessment;
+    assessment: LlmAssessment | null;
     step: AlgorithmStep;
   }> {
     const t0 = Date.now();
@@ -104,17 +147,9 @@ export class LlmMatchingService {
     try {
       rawResponse = await this.llm.callLLM(systemPrompt, context, undefined);
     } catch (err) {
-      const fallback: LlmAssessment = {
-        overallFit: 0,
-        strengths: [],
-        gaps: ['LLM评估不可用'],
-        transferableSkills: [],
-        readinessMonths: 0,
-        confidence: 0,
-        reasoning: `LLM评估失败: ${(err as Error).message}`,
-      };
+      // LLM 失败时返回 null 评估,由调用方降级为纯算法分(而不是 0 分腰斩)
       return {
-        assessment: fallback,
+        assessment: null,
         step: {
           phase: 'llm_assessment',
           label: 'LLM 深度评估',
@@ -126,38 +161,19 @@ export class LlmMatchingService {
     }
 
     const parsed = LlmMatchingService.parseJson(rawResponse);
-
-    const assessment: LlmAssessment = {
-      overallFit: Math.min(100, Math.max(0, Number(parsed.overallFit) || 0)),
-      strengths: Array.isArray(parsed.strengths)
-        ? parsed.strengths.filter((s): s is string => typeof s === 'string')
-        : [],
-      gaps: Array.isArray(parsed.gaps)
-        ? parsed.gaps.filter((g): g is string => typeof g === 'string')
-        : [],
-      transferableSkills: Array.isArray(parsed.transferableSkills)
-        ? parsed.transferableSkills
-            .filter((t) => LlmMatchingService.isTransferableSkill(t))
-            .map((t) => ({
-              candidateSkill: LlmMatchingService.toStringValue(
-                t.candidateSkill,
-              ),
-              jobRequirement: LlmMatchingService.toStringValue(
-                t.jobRequirement,
-              ),
-              transferability: LlmMatchingService.toTransferability(
-                t.transferability,
-              ),
-              reasoning: LlmMatchingService.toStringValue(t.reasoning),
-            }))
-        : [],
-      readinessMonths: Math.min(
-        12,
-        Math.max(0, Number(parsed.readinessMonths) || 0),
-      ),
-      confidence: Math.min(1, Math.max(0, Number(parsed.confidence) || 0.5)),
-      reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
-    };
+    const assessment = LlmMatchingService.buildAssessment(parsed);
+    if (!assessment) {
+      return {
+        assessment: null,
+        step: {
+          phase: 'llm_assessment',
+          label: 'LLM 深度评估',
+          status: 'error',
+          durationMs: Date.now() - t0,
+          summary: 'LLM 返回内容无法解析，本次评估降级为纯算法分',
+        },
+      };
+    }
 
     return {
       assessment,
@@ -209,7 +225,7 @@ export class LlmMatchingService {
       userMessage: string,
     ) => void,
   ): Promise<{
-    assessment: LlmAssessment;
+    assessment: LlmAssessment | null;
     step: AlgorithmStep;
   }> {
     const t0 = Date.now();
@@ -287,17 +303,9 @@ export class LlmMatchingService {
         rawResponse = chunk.fullText;
       }
     } catch (err) {
-      const fallback: LlmAssessment = {
-        overallFit: 0,
-        strengths: [],
-        gaps: ['LLM评估不可用'],
-        transferableSkills: [],
-        readinessMonths: 0,
-        confidence: 0,
-        reasoning: `LLM评估失败: ${(err as Error).message}`,
-      };
+      // LLM 失败时返回 null 评估,由调用方降级为纯算法分(而不是 0 分腰斩)
       return {
-        assessment: fallback,
+        assessment: null,
         step: {
           phase: 'llm_assessment',
           label: 'LLM 深度评估',
@@ -309,38 +317,19 @@ export class LlmMatchingService {
     }
 
     const parsed = LlmMatchingService.parseJson(rawResponse);
-
-    const assessment: LlmAssessment = {
-      overallFit: Math.min(100, Math.max(0, Number(parsed.overallFit) || 0)),
-      strengths: Array.isArray(parsed.strengths)
-        ? parsed.strengths.filter((s): s is string => typeof s === 'string')
-        : [],
-      gaps: Array.isArray(parsed.gaps)
-        ? parsed.gaps.filter((g): g is string => typeof g === 'string')
-        : [],
-      transferableSkills: Array.isArray(parsed.transferableSkills)
-        ? parsed.transferableSkills
-            .filter((t) => LlmMatchingService.isTransferableSkill(t))
-            .map((t) => ({
-              candidateSkill: LlmMatchingService.toStringValue(
-                t.candidateSkill,
-              ),
-              jobRequirement: LlmMatchingService.toStringValue(
-                t.jobRequirement,
-              ),
-              transferability: LlmMatchingService.toTransferability(
-                t.transferability,
-              ),
-              reasoning: LlmMatchingService.toStringValue(t.reasoning),
-            }))
-        : [],
-      readinessMonths: Math.min(
-        12,
-        Math.max(0, Number(parsed.readinessMonths) || 0),
-      ),
-      confidence: Math.min(1, Math.max(0, Number(parsed.confidence) || 0.5)),
-      reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
-    };
+    const assessment = LlmMatchingService.buildAssessment(parsed);
+    if (!assessment) {
+      return {
+        assessment: null,
+        step: {
+          phase: 'llm_assessment',
+          label: 'LLM 深度评估',
+          status: 'error',
+          durationMs: Date.now() - t0,
+          summary: 'LLM 返回内容无法解析，本次评估降级为纯算法分',
+        },
+      };
+    }
 
     onProgress({
       phase: 'llm_assessment',
@@ -514,7 +503,7 @@ export class LlmMatchingService {
     ) => void,
   ): Promise<
     Array<{
-      assessment: LlmAssessment;
+      assessment: LlmAssessment | null;
       step: AlgorithmStep;
     }>
   > {
@@ -538,9 +527,9 @@ export class LlmMatchingService {
     // 并发执行：各对无依赖。settled 顺序与 pairs 对齐，单对失败不影响其它对。
     const settled = await Promise.allSettled(pairs.map((p) => runOne(p)));
 
-    // 还原成与入参对齐的结果数组；失败的对回填一个 error step，保持索引一致。
+    // 还原成与入参对齐的结果数组；失败的对回填一个 error step(assessment 为 null,走纯算法分)，保持索引一致。
     const results: Array<{
-      assessment: LlmAssessment;
+      assessment: LlmAssessment | null;
       step: AlgorithmStep;
     }> = [];
     for (const r of settled) {
@@ -548,17 +537,8 @@ export class LlmMatchingService {
         results.push(r.value);
       } else {
         const errMsg = (r.reason as Error)?.message || String(r.reason);
-        const fallback: LlmAssessment = {
-          overallFit: 0,
-          strengths: [],
-          gaps: ['LLM评估不可用'],
-          transferableSkills: [],
-          readinessMonths: 0,
-          confidence: 0,
-          reasoning: `LLM评估失败: ${errMsg}`,
-        };
         results.push({
-          assessment: fallback,
+          assessment: null,
           step: {
             phase: 'llm_assessment',
             label: 'LLM 深度评估',

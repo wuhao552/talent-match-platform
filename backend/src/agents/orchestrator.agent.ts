@@ -251,6 +251,8 @@ export class OrchestratorAgent {
       skillId: number;
       proficiency: string;
       name: string;
+      /** 原始提取名,用于落库时与 extractedSkills 按名称关联 */
+      extractedName?: string;
     }[] = [];
     const seenSkillIds = new Set<number>();
     const matchingLogs: Array<{
@@ -273,6 +275,7 @@ export class OrchestratorAgent {
             skillId: match.id,
             proficiency: s.proficiency,
             name: match.name,
+            extractedName: s.name,
           });
         }
       }

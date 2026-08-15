@@ -56,30 +56,77 @@ npm run test:e2e     # E2E 测试
 ## 项目结构
 
 ```
-backend/src/
-├── agents/                    # Agent 编排层
-│   ├── orchestrator.agent.ts  # 流水线协调器
-│   ├── document-parser.agent.ts # 文档结构化解析
-│   ├── skill-extractor.agent.ts # 技能提取
-│   └── agent.interface.ts     # Agent 接口定义
-├── common/
-│   ├── decorators/            # 自定义装饰器（@CurrentUser, @Roles）
-│   └── guards/                # 守卫（JwtAuthGuard, RolesGuard）
-├── config/
-│   ├── database.config.ts     # 数据库配置
-│   └── llm.config.ts          # LLM 配置
-├── modules/
-│   ├── auth/                  # 认证模块（登录/注册/JWT）
-│   ├── document/              # 文档模块（上传/解析管道）
-│   ├── skill/                 # 技能模块（CRUD/种子数据/规则匹配）
-│   ├── graph/                 # 图谱布局模块（d3-force 预计算）
-│   ├── matching/              # 匹配模块（算法/推荐/评分）
-│   ├── llm/                   # LLM 模块（DeepSeek API + Embedding 封装）
-│   ├── admin/                 # 管理模块（后台 API）
-│   ├── dashboard/             # 仪表盘模块
-│   └── user/                  # 用户实体
-├── app.module.ts              # 根模块
-└── main.ts                    # 入口（CORS/压缩/验证管道）
+backend/
+├── data/
+│   └── entity_map/skill.list   # Job-SDF 标准技能库种子数据（2,335 条）
+├── scripts/                    # 运维 / 一次性迁移脚本
+│   ├── backup-db.ts            # 数据库备份
+│   ├── inspect-db.ts           # 数据库结构检查
+│   ├── drop-redundant-columns.ts # 清理冗余列
+│   └── migrate-skill-matcher.ts  # 技能匹配逻辑迁移
+├── src/
+│   ├── agents/                 # Agent 编排层
+│   │   ├── orchestrator.agent.ts   # 流水线协调器
+│   │   ├── document-parser.agent.ts # 文档结构化解析
+│   │   ├── skill-extractor.agent.ts # 技能提取
+│   │   ├── agent.interface.ts  # Agent 接口定义
+│   │   └── agent.module.ts     # Agent 模块装配
+│   ├── common/
+│   │   ├── decorators/         # 自定义装饰器（@CurrentUser, @Roles）
+│   │   └── guards/             # 守卫（JwtAuthGuard, RolesGuard）
+│   ├── config/
+│   │   ├── database.config.ts  # 数据库配置
+│   │   └── llm.config.ts       # LLM 配置
+│   ├── migrations/             # TypeORM 数据库迁移脚本（synchronize=false）
+│   ├── modules/
+│   │   ├── auth/               # 认证模块（登录/注册/JWT）
+│   │   ├── document/           # 文档模块（上传/解析管道）
+│   │   │   ├── document.entity.ts
+│   │   │   ├── document.service.ts
+│   │   │   └── document.controller.ts
+│   │   ├── skill/              # 技能模块（CRUD/种子数据/标准技能匹配）
+│   │   │   ├── skill.entity.ts
+│   │   │   ├── document-skill.entity.ts # 文档-技能关联实体
+│   │   │   ├── skill-seed.service.ts    # skill.list 种子数据初始化
+│   │   │   ├── skill-matcher.service.ts # 三级递进标准技能匹配
+│   │   │   └── skill.utils.ts
+│   │   ├── graph/              # 图谱布局模块（d3-force 预计算）
+│   │   ├── matching/           # 匹配模块（算法评分/LLM 评估/推荐）
+│   │   │   ├── matching.service.ts      # 算法评分
+│   │   │   ├── llm-matching.service.ts  # LLM 深度评估
+│   │   │   └── match-result.entity.ts
+│   │   ├── llm/                # LLM 模块（DeepSeek API + Embedding 封装）
+│   │   │   ├── llm.service.ts
+│   │   │   ├── embedding.service.ts     # 语义相似度计算
+│   │   │   └── llm-log.entity.ts        # LLM 调用日志实体
+│   │   ├── admin/              # 管理模块（后台 API + 审计日志）
+│   │   │   ├── admin-audit-log.entity.ts
+│   │   │   └── admin.dto.ts
+│   │   ├── ai-assistant/       # AI 智能助手（面试题生成 / 智能问答 / 职业教练）
+│   │   │   ├── ai-assistant.controller.ts   # SSE + POST 流式端点
+│   │   │   └── ai-assistant.service.ts      # 上下文加载 + LLM 调用封装
+│   │   ├── job/                # 岗位模块（发布/上下架/同步 JD 文档）
+│   │   │   ├── job.entity.ts
+│   │   │   ├── job.dto.ts
+│   │   │   ├── job.service.ts  # 含 syncFromDocument 钩子
+│   │   │   └── job.controller.ts
+│   │   ├── application/        # 投递模块（状态机 + 历史记录）
+│   │   │   ├── application.entity.ts
+│   │   │   ├── application.dto.ts
+│   │   │   └── application.service.ts
+│   │   ├── notification/       # 通知模块（点对点 + 全员广播）
+│   │   │   ├── notification.entity.ts
+│   │   │   └── notification.service.ts
+│   │   ├── message/            # 站内消息模块（会话 + 未读计数）
+│   │   │   ├── conversation.entity.ts
+│   │   │   ├── message.entity.ts
+│   │   │   └── message.service.ts
+│   │   ├── dashboard/          # 仪表盘模块
+│   │   └── user/               # 用户实体
+│   ├── app.module.ts           # 根模块
+│   ├── data-source.ts          # TypeORM DataSource（迁移 CLI 使用）
+│   └── main.ts                 # 入口（CORS/压缩/验证管道）
+└── test/                       # E2E 测试（app.e2e-spec.ts）
 ```
 
 ## 模块依赖关系
@@ -89,15 +136,21 @@ AppModule
 ├── AuthModule          JWT 认证 / 角色管理
 ├── DocumentModule      文件上传 / 解析管道
 │   └── 依赖 AgentModule
-├── SkillModule         技能 CRUD / 种子数据 / 规则匹配
-│   └── 依赖 GraphModule
+├── SkillModule         技能 CRUD / 种子数据 / 标准技能匹配
+│   └── 依赖 GraphModule（forwardRef）, LlmModule
 ├── GraphModule         图谱布局服务（d3-force 预计算）
-├── MatchingModule      匹配算法 / 推荐引擎 / 评分
-│   └── 依赖 LlmModule + DocumentModule
+├── MatchingModule      匹配算法 / 推荐引擎 / LLM 评估 / 评分
+│   └── 依赖 SkillModule, LlmModule, DocumentModule（forwardRef）
 ├── LlmModule           DeepSeek API + Embedding 封装
 ├── AgentModule         文档解析 Agent 编排
 │   └── 依赖 LlmModule, GraphModule, SkillModule
-├── AdminModule         后台管理 API
+├── AdminModule         后台管理 API + 审计日志
+├── AiAssistantModule   AI 智能助手（面试题 / 智能问答 / 职业教练，SSE 流式）
+│   └── 依赖 LlmModule, MatchingModule, DocumentModule, SkillModule, UserModule
+├── JobModule           岗位发布/上下架/从 JD 文档同步
+├── ApplicationModule   投递状态机 + 历史记录
+├── NotificationModule  通知（点对点 + 全员广播）
+├── MessageModule       站内消息（会话/未读计数/已读）
 └── DashboardModule     仪表盘 API
 ```
 
@@ -144,12 +197,125 @@ AppModule
 无 LLM 评估时：综合分 = 算法分
 ```
 
+## 招聘业务闭环
+
+在原有「文档解析 + 匹配」基础上补齐了完整的招聘业务链路，覆盖 **岗位 → 投递 → 消息 → 通知** 四大模块。
+
+### 数据模型
+
+| 表 | 关键字段 | 说明 |
+|----|---------|------|
+| `jobs` | `enterpriseId`、`documentId`、`status(draft/published/closed/archived)` | 岗位表，可由企业手动创建或由 JD 文档解析自动同步 |
+| `applications` | `jobId`、`applicantId`、`resumeDocId`、`matchResultId`、`status`、`statusHistory(jsonb)` | 投递记录，含状态流转历史 |
+| `notifications` | `userId`、`type(system/match/application/message/job)`、`readAt` | 用户通知，支持点对点 + 全员广播 |
+| `conversations` | `userAId`、`userBId`、`jobId`、`unreadA/unreadB` | 会话表，两两唯一（可选 jobId 维度） |
+| `messages` | `conversationId`、`senderId`、`readAt` | 消息表，按时间正序加载 |
+
+迁移文件：[1751600000000-AddRecruitmentTables.ts](src/migrations/1751600000000-AddRecruitmentTables.ts)
+
+### 投递状态机
+
+```
+submitted → viewed → screening → interview → offer → hired
+                ↓                                  ↓
+              rejected  ←────────────────────── rejected
+
+任意阶段 → withdrawn（候选人主动撤回）
+```
+
+每次状态变更都会写入 `statusHistory`（jsonb 数组），记录 `{ status, at, by, note }`，企业端可查看完整流转轨迹。
+
+### JD 文档 → 岗位自动同步
+
+`DocumentService.saveParseResult` 在保存解析结果后，会 fire-and-forget 调用 `JobService.syncFromDocument`：
+
+- 将 `parsedJson.structured` 自动映射为 Job 字段（`jobTitle→title`、`companyName→companyName`、`responsibilities→description`、`salaryRange→salaryMin/salaryMax`、`jobType→employmentType`）
+- 已存在 `documentId` 关联：更新字段（保留用户编辑过的 status/note 等）
+- 不存在：创建一条草稿状态 Job
+
+这让「工作台上传 JD 文档」和「岗位管理列表」数据保持一致。
+
+### 站内消息
+
+- 两两用户间保证唯一会话（可选按 jobId 区分）
+- 发送消息时：更新 `lastMessageAt`、累加对方未读数、自动给对方推送一条 `message` 类型通知
+- 拉取消息时：自动标记己方未读清零
+- 未读总数接口供前端导航栏徽标轮询
+
+### 关键接口
+
+| 模块 | 路径 | 说明 |
+|------|------|------|
+| 岗位 | `GET /api/jobs` | 已发布岗位广场（分页/搜索） |
+| 岗位 | `GET /api/jobs/mine` | 企业自己的岗位（含草稿） |
+| 投递 | `POST /api/applications` | 个人投递岗位 |
+| 投递 | `GET /api/applications/mine` | 个人投递记录 |
+| 投递 | `GET /api/applications/enterprise/all` | 企业收到的所有投递 |
+| 投递 | `PATCH /api/applications/:id/status` | 企业更新投递状态 |
+| 消息 | `GET /api/messages/conversations` | 会话列表 |
+| 消息 | `GET /api/messages/unread/total` | 未读总数 |
+| 消息 | `POST /api/messages/send` | 发送消息 |
+| 通知 | `GET /api/notifications` | 我的通知 |
+| 通知 | `PATCH /api/notifications/:id/read` | 标记已读 |
+| 管理后台 | `POST /api/admin/notifications/broadcast` | 全员广播 |
+| AI 助手 | `GET /api/ai-assistant/interview-questions/matches` | 可作为面试题上下文的匹配记录 |
+| AI 助手 | `GET /api/ai-assistant/interview-questions/stream?matchId=&token=` | 面试题生成（SSE 流式） |
+| AI 助手 | `GET /api/ai-assistant/chat/contexts` | 可作为问答上下文的文档/匹配 |
+| AI 助手 | `POST /api/ai-assistant/chat/stream` | 智能问答（POST + 流式响应） |
+| AI 助手 | `GET /api/ai-assistant/coach/stream?token=` | 候选人职业教练（SSE 流式） |
+
+## AI 智能助手
+
+`AiAssistantModule` 把前面流程产生的"匹配结果"转化为可执行的下一步动作，所有 LLM 输出均走 SSE/流式响应，token 边生成边推送。
+
+### 三大能力
+
+| 能力 | 接口 | 数据上下文 | 输出 |
+|------|------|-----------|------|
+| 面试题生成 | `GET /ai-assistant/interview-questions/stream` | 匹配记录 + 双方技能 + LLM 评估 | 6-8 道题（含类别/难度/考察点/参考答案） |
+| 智能问答 | `POST /ai-assistant/chat/stream` | 简历 / JD / 匹配记录（任选一） | 多轮对话，回答基于上下文 |
+| 候选人 AI 教练 | `GET /ai-assistant/coach/stream` | 用户最新简历技能 + 最近 5 条带评估的匹配 | 职业成长计划（短期目标/技能补齐/学习路径/推荐方向） |
+
+### 面试题生成
+
+- 输入：一条匹配记录（优先选带 `llmAssessment` 的）
+- 上下文：候选人技能、岗位要求、匹配明细、LLM 深度评估（优势/差距/可迁移技能）
+- 输出维度：**技术深度 / 差距探测 / 迁移能力 / 行为项目** 四类，每类带难度（基础/进阶/压栈）和关联技能标签
+
+### 智能问答
+
+- 支持三种上下文：`resume` / `job_description` / `match`
+- `match` 上下文会拼入：综合评分、算法分、LLM 分、优势/差距、可迁移技能、技能匹配明细、语义匹配明细
+- 多轮对话历史由前端维护，每次随 body 发送
+- 因 EventSource 不支持 body，采用 `POST + ReadableStream` 消费流式响应
+
+### 候选人 AI 教练
+
+- 上下文：用户最新一份解析过的简历技能 + 最近 5 条带 `llmAssessment` 的匹配记录（含上手周期、差距、可迁移技能）
+- 输出结构化 `CoachPlan`：整体诊断、短期目标（含周数）、技能补齐清单（含优先级和理由）、学习路径（编号步骤）、推荐岗位方向（含匹配度）
+- 数据不足时（无简历且无匹配）返回明确错误提示
+
+### SSE 事件协议
+
+三个流式端点遵循统一事件序列：
+
+```
+start → progress(running) → chunk(多个, LLM token) → progress(done) → result → complete
+                                                                                   ↘ error
+```
+
+`AiAssistantController` 中封装了 `setupSse()` / `sseWrite()` 辅助方法，统一设置 `Content-Type: text/event-stream`、`X-Accel-Buffering: no`（防 Nginx 缓冲），并按 `event: xxx\ndata: {...}\n\n` 格式写入。
+
+GET 端点（面试题 / 教练）通过 query 中的 `token` 验证 JWT（兼容 EventSource 无法设置 Header 的限制）；POST 端点（智能问答）走标准 `JwtAuthGuard`。
+
 ## LLM 集成
 
-`LlmService` 封装 DeepSeek API 调用，支持两种模型：
+`LlmService` 封装 DeepSeek API 调用，使用两类模型配置：
 
-- `deepseek-v4-flash` — 技能提取和文档解析（快速/低成本）
-- `deepseek-v4-pro` — 复杂任务（通过 `LLM_MODEL` 环境变量配置）
+- `flashModel`（固定为 `deepseek-v4-flash`）— 技能提取、文档解析等快速/低成本任务
+- `proModel`（由 `LLM_MODEL` 环境变量配置，未设置时回退到 `deepseek-v4-flash`）— LLM 深度评估等复杂任务
+
+> 注：代码默认统一使用 `deepseek-v4-flash`；仅当在 `.env` 中显式设置 `LLM_MODEL`（如 `deepseek-v4-pro`）后，复杂任务才会切换到该模型。
 
 特性：
 - 内存缓存，30 分钟 TTL（SHA-256 哈希键）
