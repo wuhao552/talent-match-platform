@@ -15,6 +15,12 @@ const ResumeDetail = lazy(() => import('@/pages/ResumeDetail').then(m => ({ defa
 const JobDetail = lazy(() => import('@/pages/JobDetail').then(m => ({ default: m.JobDetail })))
 const Profile = lazy(() => import('@/pages/Profile').then(m => ({ default: m.Profile })))
 const PipelineView = lazy(() => import('@/pages/PipelineView').then(m => ({ default: m.PipelineView })))
+const Jobs = lazy(() => import('@/pages/Jobs').then(m => ({ default: m.Jobs })))
+const JobInfo = lazy(() => import('@/pages/JobInfo').then(m => ({ default: m.JobInfo })))
+const Applications = lazy(() => import('@/pages/Applications').then(m => ({ default: m.Applications })))
+const Notifications = lazy(() => import('@/pages/Notifications').then(m => ({ default: m.Notifications })))
+const Messages = lazy(() => import('@/pages/Messages').then(m => ({ default: m.Messages })))
+const AIAssistant = lazy(() => import('@/pages/AIAssistant').then(m => ({ default: m.AIAssistant })))
 
 function PageLoader() {
   return (
@@ -49,6 +55,12 @@ function App() {
                     <Route path="/job/:jobDocId" element={<JobDetail />} />
                     <Route path="/profile" element={<Profile />} />
                     <Route path="/pipeline/:docId" element={<PipelineView />} />
+                    <Route path="/jobs" element={<Jobs />} />
+                    <Route path="/jobs/:id" element={<JobInfo />} />
+                    <Route path="/applications" element={<Applications />} />
+                    <Route path="/notifications" element={<Notifications />} />
+                    <Route path="/messages" element={<Messages />} />
+                    <Route path="/ai-assistant" element={<AIAssistant />} />
                     <Route path="*" element={<Navigate to="/dashboard" replace />} />
                   </Routes>
                 </Suspense>

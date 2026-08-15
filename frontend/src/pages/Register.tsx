@@ -147,15 +147,15 @@ export function Register() {
 
   return (
     <div className="flex h-screen">
-      <div className="hidden w-1/2 lg:flex items-center justify-center p-8">
+      <div className="hidden w-1/2 md:flex items-center justify-center p-8">
         <div className="relative h-full w-full overflow-hidden rounded-3xl">
           <TextureBg />
         </div>
       </div>
 
-      <div className="flex w-full lg:w-1/2 items-center justify-center px-8 overflow-auto">
+      <div className="flex w-full md:w-1/2 items-center justify-center px-8 overflow-auto">
         <div className="w-full max-w-sm space-y-8 py-8">
-          <div className="text-center lg:hidden">
+          <div className="text-center md:hidden">
             <h1 className="text-xl font-bold">能力图谱匹配系统</h1>
           </div>
 

@@ -155,17 +155,17 @@ export function Login() {
   return (
     <div className="flex h-screen">
       {/* Left — rounded card with animated texture */}
-      <div className="hidden w-1/2 lg:flex items-center justify-center p-8">
+      <div className="hidden w-1/2 md:flex items-center justify-center p-8">
         <div className="relative h-full w-full overflow-hidden rounded-3xl">
           <TextureBg />
         </div>
       </div>
 
       {/* Right — content */}
-      <div className="flex w-full lg:w-1/2 items-center justify-center px-8">
+      <div className="flex w-full md:w-1/2 items-center justify-center px-8">
         <div className="w-full max-w-sm space-y-8">
           {/* Mobile branding */}
-          <div className="text-center lg:hidden">
+          <div className="text-center md:hidden">
             <h1 className="text-xl font-bold">能力图谱匹配系统</h1>
           </div>
 

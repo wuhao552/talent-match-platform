@@ -51,7 +51,13 @@ frontend/src/
 │   ├── JobDetail.tsx    # 岗位详情
 │   ├── MatchingResult.tsx # 匹配详情 + 能力图谱
 │   ├── PipelineView.tsx # 解析流水线可视化
-│   └── Profile.tsx      # 个人信息
+│   ├── Profile.tsx      # 个人信息
+│   ├── Jobs.tsx         # 岗位广场(个人) / 岗位管理(企业)
+│   ├── JobInfo.tsx      # 岗位详情 + 立即投递
+│   ├── Applications.tsx # 投递记录(个人投递 / 企业收到的投递)
+│   ├── Messages.tsx     # 消息中心(会话列表 + 聊天)
+│   ├── Notifications.tsx # 通知中心
+│   └── AIAssistant.tsx  # AI 智能助手(面试题/智能问答/职业教练)
 ├── services/
 │   └── api.ts           # API 请求封装（统一 /api 前缀 + JWT）
 ├── types/
@@ -74,7 +80,14 @@ frontend/src/
 | `/job/:jobDocId` | JobDetail | 岗位详情 |
 | `/matching/:id` | MatchingResult | 匹配详情 + 能力图谱 |
 | `/pipeline/:docId` | PipelineView | 解析流水线可视化 |
+| `/graph/:docId` | — | 重定向至 `/pipeline/:docId`（兼容旧路径） |
 | `/profile` | Profile | 个人信息 |
+| `/jobs` | Jobs | 岗位广场(个人) / 岗位管理(企业) |
+| `/jobs/:id` | JobInfo | 岗位详情 + 立即投递 |
+| `/applications` | Applications | 投递记录(个人/企业) |
+| `/messages` | Messages | 消息中心(会话 + 聊天) |
+| `/notifications` | Notifications | 通知中心 |
+| `/ai-assistant` | AIAssistant | AI 智能助手(面试题/智能问答/职业教练) |
 
 ## 核心功能
 
@@ -106,6 +119,47 @@ D3.js 力导向图展示技能关联（布局由后端 `GraphLayoutService` 预�
 - 右侧绿色节点：岗位要求技能
 - 彩色节点：技能（颜色 = 类别，大小 = 熟练度）
 - 绿色边：已匹配技能
+
+## 招聘业务闭环
+
+在原有的「上传 → 解析 → 匹配」基础上，补齐了完整的招聘业务前端链路：
+
+### 岗位（Jobs / JobInfo）
+
+- **个人用户**：浏览已发布岗位、按关键词/地点/工作类型搜索、查看岗位详情、一键投递（自动选择当前最新的简历）
+- **企业用户**：管理自己发布的岗位、新建岗位、编辑/上下架/删除、查看投递数
+
+工作台上传 JD 文档解析后，会自动在「岗位管理」生成一条草稿岗位，避免工作台与岗位管理数据割裂。
+
+### 投递（Applications）
+
+- **个人用户**：查看自己的投递记录、按状态筛选、查看岗位详情、撤回投递
+- **企业用户**：查看收到的所有投递、按状态/岗位筛选、更新投递状态（已查看 → 筛选 → 面试 → offer → 录用/拒绝）、查看状态流转历史、直接发起与候选人的会话
+
+投递状态以彩色 Badge 展示，支持完整的招聘流程状态机。
+
+### 消息中心（Messages）
+
+- 左侧会话列表（带未读数徽标 + 最新消息预览）
+- 右侧聊天界面（消息气泡 + 自动滚动到底）
+- 5 秒轮询自动刷新会话列表与未读数
+- 可从「投递管理」直接发起会话，会话关联岗位与投递记录
+
+### 通知中心（Notifications）
+
+- 通知列表（系统/匹配/投递/消息/岗位五类，彩色类型标签）
+- 标记单条已读 / 一键全部已读
+- 导航栏未读徽标（30 秒轮询）
+
+### AI 智能助手（AIAssistant）
+
+把匹配结果转化为可执行的下一步动作，三个 Tab 全部走流式输出：
+
+- **面试题生成**：选择匹配记录后调用 `GET /api/ai-assistant/interview-questions/stream`（EventSource + token query 鉴权），按"技术深度/差距探测/迁移能力/行为项目"四类生成 6-8 道题，每题带类别色标、难度（基础/进阶/压栈）、关联技能、考察点、可折叠参考答案
+- **智能问答**：选择"简历/JD/匹配记录"任一作为上下文，调用 `POST /api/ai-assistant/chat/stream`（fetch + ReadableStream 消费，因 EventSource 不支持 body），支持多轮对话；切换上下文时清空历史
+- **候选人 AI 教练**：调用 `GET /api/ai-assistant/coach/stream`，基于用户技能图谱 + 最近 5 条带 LLM 评估的匹配，生成结构化职业计划：整体诊断、短期目标（含周数）、技能补齐清单（含优先级）、学习路径、推荐岗位方向
+
+三个 Tab 共用 `StreamingPanel` 组件展示 LLM 实时 token 流（含加载态、错误态、完成态）。
 
 ## 构建优化
 

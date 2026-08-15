@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { matchingApi, documentApi } from '@/services/api'
+import { useAuth } from '@/hooks/useAuth'
+import { matchingApi, documentApi, jobApi, applicationApi } from '@/services/api'
+import { toast } from 'sonner'
+import { ApplyDialog } from '@/components/application/ApplyDialog'
 import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,9 +12,10 @@ import { SkillForceGraph } from '@/components/graph/SkillForceGraph'
 import {
   ChevronLeft, MapPin, Building, Clock, AlertTriangle, RefreshCw,
   CheckCircle2, XCircle, Loader2, Brain, GitBranch, Zap,
-  TrendingUp, ArrowRightLeft,
+  TrendingUp, ArrowRightLeft, ListChecks, Gift, Send,
 } from 'lucide-react'
-import type { MatchResult, Document, DocumentSkill, AlgorithmStep } from '@/types'
+import type { MatchResult, Document, DocumentSkill, AlgorithmStep, Job } from '@/types'
+import { MatchChatPanel } from '@/components/ai/MatchChatPanel'
 
 // ── Pipeline step icon ──
 function StepIcon({ status }: { status: AlgorithmStep['status'] }) {
@@ -46,6 +50,8 @@ function TransferBadge({ level }: { level: 'high' | 'medium' | 'low' }) {
 export function MatchingResult() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const isIndividual = user?.role === 'individual'
   const [match, setMatch] = useState<MatchResult | null>(null)
   const [jobDoc, setJobDoc] = useState<Document | null>(null)
   const [skills, setSkills] = useState<DocumentSkill[]>([])
@@ -53,6 +59,12 @@ export function MatchingResult() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [reparsing, setReparsing] = useState(false)
+
+  // 投递相关(仅个人用户)
+  const [applyJob, setApplyJob] = useState<Job | null>(null)
+  const [applied, setApplied] = useState(false)
+  const [myResumes, setMyResumes] = useState<Document[]>([])
+  const [showApply, setShowApply] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -73,6 +85,35 @@ export function MatchingResult() {
       .finally(() => setLoading(false))
   }, [id])
 
+  // 个人用户:加载该 JD 关联的岗位、是否已投递、可选简历
+  useEffect(() => {
+    if (!isIndividual || !match?.jobDocId) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const jobRes = await jobApi.getByDocument(match.jobDocId)
+        if (cancelled) return
+        const job = jobRes.data
+        if (job.status === 'published') {
+          setApplyJob(job)
+          try {
+            const listRes = await applicationApi.myList({ size: 100 })
+            if (!cancelled) setApplied(listRes.data.items.some((a) => a.jobId === job.id))
+          } catch { /* 查询投递记录失败不影响展示 */ }
+          try {
+            const docRes = await documentApi.list()
+            if (!cancelled) setMyResumes(docRes.data.filter((d) => d.docType === 'resume' && d.status === 'parsed'))
+          } catch { /* ignore */ }
+        } else {
+          setApplyJob(null)
+        }
+      } catch {
+        if (!cancelled) setApplyJob(null)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [isIndividual, match?.jobDocId])
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center py-24 gap-3">
@@ -90,7 +131,17 @@ export function MatchingResult() {
     )
   }
 
-  const jobStructured = (jobDoc?.parsedJson as any)?.structured || {}
+  // JD 结构化内容:企业端可直接读文档;求职者端无权读企业文档,
+  // 回退到匹配结果接口返回的 jobStructured 摘要(后端已对双方开放)
+  const jobStructured =
+    (jobDoc?.parsedJson as any)?.structured || match.jobStructured || {}
+  // JD 结构化字段(与后端解析结果一致)
+  const asStringArray = (v: unknown): string[] =>
+    Array.isArray(v)
+      ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      : []
+  const jobResponsibilities = asStringArray(jobStructured.responsibilities)
+  const jobBenefits = asStringArray(jobStructured.benefits)
   const effectiveJobSkills: DocumentSkill[] = jobSkills.length > 0 ? jobSkills : (() => {
     if (!match?.matchDetails) return [] as DocumentSkill[]
     const seen = new Set<number>()
@@ -113,10 +164,17 @@ export function MatchingResult() {
     try {
       await documentApi.parse(docId)
       setTimeout(async () => {
-        try { if (match) await matchingApi.calculate(match.resumeDocId, match.jobDocId) } catch {}
+        try {
+          if (match) await matchingApi.calculate(match.resumeDocId, match.jobDocId)
+        } catch (e) {
+          toast.error((e as Error)?.message || '重新匹配失败，请稍后重试')
+        }
         window.location.reload()
       }, 5000)
-    } catch { setReparsing(false) }
+    } catch (e) {
+      setReparsing(false)
+      toast.error((e as Error)?.message || '重新解析失败，请稍后重试')
+    }
   }
 
   const breakdown = match.scoreBreakdown
@@ -124,7 +182,9 @@ export function MatchingResult() {
   const llm = match.llmAssessment
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="mx-auto max-w-7xl">
+      <div className="flex flex-col lg:flex-row gap-6 items-start">
+        <div className="flex-1 min-w-0 space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="sm" onClick={() => navigate(-1 as any)}>
@@ -138,11 +198,24 @@ export function MatchingResult() {
         </div>
         <div className="text-right">
           <p className={`text-3xl font-bold tabular-nums ${scoreColor(match.overallScore)}`}>
-            {Math.round(match.overallScore)}%
+            {Math.round(match.overallScore)}分
           </p>
           <p className="text-[10px] text-muted-foreground">最终匹配度</p>
         </div>
       </div>
+
+      {/* LLM 评估失败降级提示 */}
+      {breakdown?.matchStatus === 'fallback' && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950/30">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div>
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-300">LLM 深度评估未完成，当前分数仅由算法计算</p>
+              <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">可能是大模型服务暂不可用，稍后可重新计算获取完整评估。</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Job info */}
       {effectiveJobSkills.length === 0 && (
@@ -161,23 +234,41 @@ export function MatchingResult() {
         </div>
       )}
 
+      {/* 个人用户:投递入口 */}
+      {isIndividual && (
+        <div className="flex flex-wrap items-center gap-2">
+          {applyJob ? (
+            <Button disabled={applied} onClick={() => setShowApply(true)}>
+              <Send className="mr-2 h-4 w-4" />
+              {applied ? '已投递该职位' : '立即投递该职位'}
+            </Button>
+          ) : (
+            <p className="text-xs text-muted-foreground">该职位暂未开放投递</p>
+          )}
+          {applied && (
+            <Button variant="outline" onClick={() => navigate('/applications')}>
+              查看投递记录
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* 企业与职位信息 */}
       <Card>
-        <CardHeader>
-          <div className="flex items-start justify-between">
-            <div className="min-w-0 flex-1">
-              <CardTitle className="text-xl leading-tight">{match.jobTitle || match.jobFilename}</CardTitle>
-              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                {match.companyName && <span className="flex items-center gap-1"><Building className="h-3.5 w-3.5" />{match.companyName}</span>}
-                {match.jobCity && <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{match.jobCity}</span>}
-                {jobDoc?.createdAt && <span className="flex items-center gap-1"><Clock className="h-3.5 w-3.5" />{new Date(jobDoc.createdAt).toLocaleDateString('zh-CN')}</span>}
-                {jobStructured.salary && <span className="font-medium text-foreground">{String(jobStructured.salary)}</span>}
-                {jobStructured.education && <span>{String(jobStructured.education)}</span>}
-              </div>
-            </div>
+        <CardContent className="space-y-4 pt-5">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+            {match.companyName && <span className="flex items-center gap-1"><Building className="h-3.5 w-3.5" />{match.companyName}</span>}
+            {(jobStructured.location || match.jobCity) && <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{String(jobStructured.location || match.jobCity)}</span>}
+            {jobStructured.companyIndustry && <span>行业：{String(jobStructured.companyIndustry)}</span>}
+            {jobStructured.companySize && <span>规模：{String(jobStructured.companySize)}</span>}
+            {jobStructured.department && <span>部门：{String(jobStructured.department)}</span>}
+            {jobStructured.salaryRange && <span className="font-medium text-foreground">{String(jobStructured.salaryRange)}</span>}
+            {jobStructured.experienceRequired && <span>经验：{String(jobStructured.experienceRequired)}</span>}
+            {jobStructured.educationRequired && <span>学历：{String(jobStructured.educationRequired)}</span>}
+            {(jobDoc?.createdAt || match.createdAt) && <span className="flex items-center gap-1"><Clock className="h-3.5 w-3.5" />{new Date(jobDoc?.createdAt || match.createdAt).toLocaleDateString('zh-CN')}</span>}
           </div>
-        </CardHeader>
-        {(match.jobTopSkills?.length || jobStructured.summary) && (
-          <CardContent className="space-y-4">
+        {(match.jobTopSkills?.length || jobStructured.summary || jobResponsibilities.length > 0 || jobBenefits.length > 0) && (
+          <div className="space-y-4">
             {match.jobTopSkills && match.jobTopSkills.length > 0 && (
               <div>
                 <p className="mb-2 text-sm font-medium">技能要求</p>
@@ -187,8 +278,32 @@ export function MatchingResult() {
             {jobStructured.summary && (
               <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">{String(jobStructured.summary)}</p>
             )}
-          </CardContent>
+            {jobResponsibilities.length > 0 && (
+              <div>
+                <p className="mb-2 text-sm font-medium flex items-center gap-1.5">
+                  <ListChecks className="h-4 w-4 text-primary" />岗位职责
+                </p>
+                <ol className="space-y-1.5">
+                  {jobResponsibilities.map((r, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm text-muted-foreground">
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium">{i + 1}</span>
+                      <span className="leading-relaxed">{String(r)}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+            {jobBenefits.length > 0 && (
+              <div>
+                <p className="mb-2 text-sm font-medium flex items-center gap-1.5">
+                  <Gift className="h-4 w-4 text-primary" />福利待遇
+                </p>
+                <div className="flex flex-wrap gap-1.5">{jobBenefits.map((b, i) => <Badge key={i} variant="outline" className="text-[11px]">{String(b)}</Badge>)}</div>
+              </div>
+            )}
+          </div>
         )}
+        </CardContent>
       </Card>
 
       {/* ═══════════════════════════════════════════════════════ */}
@@ -455,6 +570,23 @@ export function MatchingResult() {
           </CardContent>
         </Card>
       )}
+        </div>
+
+        {/* 右侧:智能问答助手(基于当前匹配上下文,滚动时保持可见) */}
+        <aside className="w-full lg:w-96 shrink-0 lg:sticky lg:top-4 h-[600px]">
+          <MatchChatPanel matchId={id || ''} />
+        </aside>
+      </div>
+
+      {/* 投递弹窗(个人用户) */}
+      <ApplyDialog
+        open={showApply}
+        jobId={applyJob?.id || ''}
+        resumes={myResumes}
+        defaultResumeId={match.resumeDocId}
+        onClose={() => setShowApply(false)}
+        onApplied={() => { setShowApply(false); setApplied(true) }}
+      />
     </div>
   )
 }

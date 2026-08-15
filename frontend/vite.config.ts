@@ -1,7 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import postcssPresetEnv from 'postcss-preset-env'
 import path from 'path'
 
 // https://vite.dev/config/
@@ -16,22 +15,6 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': 'http://localhost:3100',
-    },
-  },
-  css: {
-    postcss: {
-      plugins: [
-        postcssPresetEnv({
-          overrideBrowserslist: ['Chrome 90'],
-          preserve: false,
-          enableClientSidePolyfills: false,
-        }),
-      ],
-    },
-    lightningcss: {
-      targets: {
-        chrome: 90 << 16,
-      },
     },
   },
   build: {

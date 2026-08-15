@@ -1071,8 +1071,10 @@ export function PipelineView() {
         if (p.resumeId !== data.resumeId || p.jobId !== data.jobId) return p
         return {
           ...p,
+          // 只更新分数与 id;llmAssessment 等完整数据由随后的 result 事件一次性写入,
+          // 不要在这里拼装残缺对象(否则 fallback 时会出现只含 confidence 的假评估)
           result: data.overallScore != null
-            ? { ...(p.result || {} as any), id: data.matchId || p.result?.id, overallScore: data.overallScore, llmAssessment: { ...(p.result?.llmAssessment || {} as any), confidence: data.confidence } }
+            ? { ...(p.result || {} as any), id: data.matchId || p.result?.id, overallScore: data.overallScore }
             : p.result,
           llmCalls: p.llmCalls.map(c => ({ ...c, done: true })),
         }

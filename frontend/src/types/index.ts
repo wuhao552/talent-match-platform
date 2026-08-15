@@ -61,6 +61,8 @@ export interface MatchResult {
   jobTitle?: string
   jobCity?: string
   jobTopSkills?: string[]
+  /** JD 结构化摘要(薪资/职责/要求/福利等),来自匹配结果接口,双方可见 */
+  jobStructured?: Record<string, unknown> | null
 }
 
 export interface MatchDetail {
@@ -141,4 +143,114 @@ export interface RegisterRequest {
 export interface AuthResponse {
   accessToken: string
   user: User
+}
+
+// Pagination
+export interface PaginatedResponse<T> {
+  items: T[]
+  total: number
+  page: number
+  pageSize?: number
+  size?: number
+}
+
+// Job
+export type JobStatus = 'draft' | 'published' | 'closed' | 'archived'
+export type EmploymentType = 'full_time' | 'part_time' | 'internship' | 'contract'
+
+export interface Job {
+  id: string
+  enterpriseId: string
+  documentId?: string | null
+  title: string
+  companyName?: string
+  department?: string
+  description: string
+  requirements?: Record<string, unknown> | null
+  location?: string
+  salaryMin?: number | null
+  salaryMax?: number | null
+  salaryUnit: string
+  experienceRequired?: string
+  educationRequired?: string
+  employmentType: EmploymentType
+  headcount: number
+  status: JobStatus
+  expiresAt?: string | null
+  createdAt: string
+  updatedAt: string
+  enterprise?: Pick<User, 'id' | 'username' | 'companyName' | 'city'>
+}
+
+// Application
+export type ApplicationStatus =
+  | 'submitted' | 'viewed' | 'screening' | 'interview'
+  | 'offer' | 'hired' | 'rejected' | 'withdrawn'
+
+export interface StatusChange {
+  status: ApplicationStatus
+  at: string
+  by: string
+  note?: string
+}
+
+export interface Application {
+  id: string
+  jobId: string
+  applicantId: string
+  resumeDocId: string
+  matchResultId?: string | null
+  coverLetter?: string
+  status: ApplicationStatus
+  enterpriseNote?: string
+  statusHistory: StatusChange[]
+  createdAt: string
+  updatedAt: string
+  job?: Job
+  applicant?: Pick<User, 'id' | 'username' | 'city' | 'companyName'>
+}
+
+// Notification
+export type NotificationType = 'system' | 'match' | 'application' | 'message' | 'job'
+
+export interface Notification {
+  id: string
+  userId: string
+  type: NotificationType
+  title: string
+  content: string
+  relatedId?: string | null
+  relatedType?: string | null
+  readAt?: string | null
+  createdAt: string
+}
+
+// Conversation / Message
+export interface ConversationListItem {
+  id: string
+  otherUser: {
+    id: string
+    username: string
+    role: string
+    companyName?: string
+  } | null
+  jobId?: string | null
+  unread: number
+  lastMessage: {
+    content: string
+    createdAt: string
+    senderId: string
+  } | null
+  lastMessageAt?: string | null
+  createdAt: string
+}
+
+export interface Message {
+  id: string
+  conversationId: string
+  senderId: string
+  content: string
+  readAt?: string | null
+  createdAt: string
+  sender?: Pick<User, 'id' | 'username'>
 }
