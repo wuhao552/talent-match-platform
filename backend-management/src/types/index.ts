@@ -38,3 +38,60 @@ export interface TrendData { date: string; newUsers: number; newDocuments: numbe
 export interface SkillStats { category: string; count: number }
 export interface LlmStats { totalCalls: number; successRate: number; avgLatency: number; byModel: { model: string; count: number; avgLatency: number }[]; byCallType: { callType: string; count: number }[] }
 export interface AuthResponse { accessToken: string; user: AdminUser }
+
+// Jobs
+export type JobStatus = 'draft' | 'published' | 'closed' | 'archived'
+export type EmploymentType = 'full_time' | 'part_time' | 'internship' | 'contract'
+
+export interface AdminJob {
+  id: string
+  enterpriseId: string
+  title: string
+  companyName?: string
+  department?: string
+  description: string
+  location?: string
+  salaryMin?: number | null
+  salaryMax?: number | null
+  salaryUnit?: string
+  experienceRequired?: string
+  educationRequired?: string
+  employmentType: EmploymentType
+  headcount: number
+  status: JobStatus
+  expiresAt?: string | null
+  createdAt: string
+  updatedAt: string
+  enterprise?: Pick<AdminUser, 'id' | 'username' | 'companyName' | 'city'>
+}
+
+// Applications
+export type ApplicationStatus =
+  | 'submitted' | 'viewed' | 'screening' | 'interview'
+  | 'offer' | 'hired' | 'rejected' | 'withdrawn'
+
+export interface StatusChange {
+  status: ApplicationStatus
+  at: string
+  by: string
+  note?: string
+}
+
+export interface AdminApplication {
+  id: string
+  jobId: string
+  applicantId: string
+  resumeDocId: string
+  matchResultId?: string | null
+  coverLetter?: string
+  status: ApplicationStatus
+  enterpriseNote?: string
+  statusHistory: StatusChange[]
+  createdAt: string
+  updatedAt: string
+  job?: AdminJob
+  applicant?: Pick<AdminUser, 'id' | 'username' | 'city' | 'companyName'>
+}
+
+// Notification broadcast
+export type NotificationType = 'system' | 'match' | 'application' | 'message' | 'job'

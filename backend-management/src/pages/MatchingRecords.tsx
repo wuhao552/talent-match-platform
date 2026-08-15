@@ -14,6 +14,8 @@ import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'sonner'; import { Search, ChevronLeft, ChevronRight } from 'lucide-react'
 
 function sC(s: number) { if (s >= 80) return 'text-emerald-600 bg-emerald-50'; if (s >= 60) return 'text-amber-600 bg-amber-50'; return 'text-red-600 bg-red-50' }
+// 空值保护:fallback 记录分数可能为 null,避免渲染出 NaN
+function fmt(v: number | null | undefined) { return v === null || v === undefined ? '--' : Number(v).toFixed(1) }
 
 export function MatchingRecords() {
   const [data, setData] = useState<PaginatedResponse<AdminMatchResult> | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState('')
@@ -41,9 +43,9 @@ export function MatchingRecords() {
             <TableBody>{data.items.map(m => (<TableRow key={m.id}>
               <TableCell className="max-w-[150px] truncate font-medium" title={m.resumeDoc?.originalFilename}>{m.resumeDoc?.originalFilename || '--'}</TableCell>
               <TableCell className="max-w-[150px] truncate" title={m.jobDoc?.originalFilename}>{m.jobDoc?.originalFilename || '--'}</TableCell>
-              <TableCell><Badge className={`font-bold ${sC(Number(m.overallScore))}`}>{Number(m.overallScore).toFixed(1)}</Badge></TableCell>
-              <TableCell className="text-sm">{Number(m.skillMatchScore).toFixed(1)}</TableCell>
-              <TableCell className="text-sm">{Number(m.cityMatchBonus).toFixed(1)}</TableCell>
+              <TableCell><Badge className={`font-bold ${sC(Number(m.overallScore ?? 0))}`}>{fmt(m.overallScore)}</Badge></TableCell>
+              <TableCell className="text-sm">{fmt(m.skillMatchScore)}</TableCell>
+              <TableCell className="text-sm">{fmt(m.cityMatchBonus)}</TableCell>
               <TableCell className="text-sm text-muted-foreground">{new Date(m.createdAt).toLocaleDateString('zh-CN')}</TableCell>
               <TableCell><Button variant="ghost" size="sm" onClick={async () => { try { const r = await adminApi.getMatchResultDetail(m.id); setDetail(r.data) } catch (e) { toast.error('获取详情失败') } }}>详情</Button></TableCell>
             </TableRow>))}</TableBody></Table>
@@ -51,7 +53,7 @@ export function MatchingRecords() {
               <div className="flex gap-1"><Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}><ChevronLeft className="h-4 w-4" />上一页</Button><Button variant="outline" size="sm" disabled={page * data.pageSize >= data.total} onClick={() => setPage(p => p + 1)}>下一页<ChevronRight className="h-4 w-4" /></Button></div></div></>
         )}
       </CardContent></Card>
-      <Dialog open={!!detail} onOpenChange={() => setDetail(null)}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>匹配详情</DialogTitle><DialogDescription>总分: {detail && Number(detail.overallScore).toFixed(1)} | 技能: {detail && Number(detail.skillMatchScore).toFixed(1)} | 城市: {detail && Number(detail.cityMatchBonus).toFixed(1)}</DialogDescription></DialogHeader>
+      <Dialog open={!!detail} onOpenChange={() => setDetail(null)}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>匹配详情</DialogTitle><DialogDescription>总分: {detail ? fmt(detail.overallScore) : '--'} | 技能: {detail ? fmt(detail.skillMatchScore) : '--'} | 城市: {detail ? fmt(detail.cityMatchBonus) : '--'}</DialogDescription></DialogHeader>
         {detail && <div className="space-y-4 text-sm">
           <div className="grid grid-cols-2 gap-4"><div className="rounded-lg border p-3"><Label className="mb-1 block text-xs">简历</Label><p className="font-medium">{detail.resumeDoc?.originalFilename || '--'}</p></div><div className="rounded-lg border p-3"><Label className="mb-1 block text-xs">职位</Label><p className="font-medium">{detail.jobDoc?.originalFilename || '--'}</p></div></div>
           {detail.matchDetails?.length > 0 && <div><Label className="mb-2 block text-xs">技能匹配明细</Label><Table><TableHeader><TableRow><TableHead>技能</TableHead><TableHead>个人水平</TableHead><TableHead>岗位要求</TableHead><TableHead>得分</TableHead></TableRow></TableHeader><TableBody>{detail.matchDetails.map((d, i) => (<TableRow key={i}><TableCell className="font-medium">{d.skillName}</TableCell><TableCell>{d.personProficiency}</TableCell><TableCell>{d.jobRequirement}</TableCell><TableCell><span className={sC(d.score).split(' ')[0]}>{d.score}</span></TableCell></TableRow>))}</TableBody></Table></div>}

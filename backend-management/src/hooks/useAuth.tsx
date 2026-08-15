@@ -21,8 +21,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (token) {
-      adminApi.login('', '').catch(() => {}) // validate store
-      // Actually use /auth/profile
+      // 用 /auth/profile 校验 token 并加载管理员信息
       const req = async () => {
         const BASE = '/api'
         const res = await fetch(`${BASE}/auth/profile`, { headers: { Authorization: `Bearer ${token}` } })

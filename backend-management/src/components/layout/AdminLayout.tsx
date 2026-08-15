@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import {
   LayoutDashboard, Users, FileText, Wrench, GitCompare, Terminal,
   LogOut, ChevronRight, KeyRound, ChevronUp, ChevronDown,
+  Briefcase, Send, Megaphone,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -26,11 +27,15 @@ const navItems = [
   { to: '/skills', icon: Wrench, label: '技能管理' },
   { to: '/matching', icon: GitCompare, label: '匹配记录' },
   { to: '/llm-logs', icon: Terminal, label: 'LLM 日志' },
+  { to: '/jobs', icon: Briefcase, label: '岗位管理' },
+  { to: '/applications', icon: Send, label: '投递记录' },
+  { to: '/notifications', icon: Megaphone, label: '通知广播' },
 ]
 
 const bcMap: Record<string, string> = {
   '/': '仪表盘', '/users': '用户管理', '/documents': '文档管理',
   '/skills': '技能管理', '/matching': '匹配记录', '/llm-logs': 'LLM 日志',
+  '/jobs': '岗位管理', '/applications': '投递记录', '/notifications': '通知广播',
 }
 
 export function AdminLayout() {

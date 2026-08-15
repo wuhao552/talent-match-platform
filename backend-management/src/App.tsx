@@ -14,6 +14,9 @@ import { DocumentManagement } from '@/pages/DocumentManagement'
 import { SkillManagement } from '@/pages/SkillManagement'
 import { MatchingRecords } from '@/pages/MatchingRecords'
 import { LlmLogs } from '@/pages/LlmLogs'
+import { JobManagement } from '@/pages/JobManagement'
+import { ApplicationRecords } from '@/pages/ApplicationRecords'
+import { NotificationBroadcast } from '@/pages/NotificationBroadcast'
 import type { ReactNode } from 'react'
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -35,6 +38,9 @@ function AppRoutes() {
         <Route path="/skills" element={<SkillManagement />} />
         <Route path="/matching" element={<MatchingRecords />} />
         <Route path="/llm-logs" element={<LlmLogs />} />
+        <Route path="/jobs" element={<JobManagement />} />
+        <Route path="/applications" element={<ApplicationRecords />} />
+        <Route path="/notifications" element={<NotificationBroadcast />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
