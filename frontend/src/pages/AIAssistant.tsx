@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -85,29 +86,30 @@ function InterviewTab() {
   const [error, setError] = useState<string | null>(null)
   const esRef = useRef<EventSource | null>(null)
 
-  async function loadMatches() {
+  const loadMatches = useCallback(async () => {
     try {
       setLoading(true)
       const res = await aiAssistantApi.listInterviewMatches()
       setMatches(res.data)
-      if (res.data.length > 0 && !selectedMatchId) {
+      if (res.data.length > 0) {
         // 优先选带 llmAssessment 的
         const withLlm = res.data.find((m) => m.hasLlmAssessment)
-        setSelectedMatchId((withLlm || res.data[0]).id)
+        setSelectedMatchId((current) => current || (withLlm || res.data[0]).id)
       }
     } catch (err) {
       setError((err as Error).message)
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 首次进入拉取匹配记录
     loadMatches()
     return () => {
       esRef.current?.close()
     }
-  }, [])
+  }, [loadMatches])
 
   function startGenerate() {
     if (!selectedMatchId || streaming) return
@@ -530,32 +532,28 @@ export function AIAssistant() {
   const [tab, setTab] = useState('interview')
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Brain className="h-6 w-6 text-primary" />
-          AI 智能助手
-        </h1>
-        <p className="text-muted-foreground mt-1">
-          面试题生成 · 职业成长教练，让 AI 把匹配结果转化为可执行的下一步
-        </p>
-      </div>
+    <div className="mx-auto max-w-5xl">
+      <PageHeader
+        title="AI 智能助手"
+        description="面试题生成 · 职业成长教练，把匹配结果转化为可执行的下一步"
+        icon={Brain}
+      />
 
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="grid w-full grid-cols-2 max-w-sm">
+        <TabsList className="grid h-10 w-full max-w-sm grid-cols-2">
           <TabsTrigger value="interview" className="text-xs sm:text-sm">
-            <Brain className="h-3.5 w-3.5 mr-1" />
+            <Brain className="size-3.5" />
             面试题
           </TabsTrigger>
           <TabsTrigger value="coach" className="text-xs sm:text-sm">
-            <GraduationCap className="h-3.5 w-3.5 mr-1" />
+            <GraduationCap className="size-3.5" />
             AI 教练
           </TabsTrigger>
         </TabsList>
-        <TabsContent value="interview" className="mt-4">
+        <TabsContent value="interview" className="mt-5">
           <InterviewTab />
         </TabsContent>
-        <TabsContent value="coach" className="mt-4">
+        <TabsContent value="coach" className="mt-5">
           <CoachTab />
         </TabsContent>
       </Tabs>

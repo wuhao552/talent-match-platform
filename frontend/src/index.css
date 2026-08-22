@@ -91,12 +91,56 @@
   * {
     @apply border-border outline-ring/50;
   }
-  body {
-    @apply bg-background text-foreground;
-    margin: 0;
-  }
+
   html {
     @apply font-sans antialiased;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    min-height: 100vh;
+    margin: 0;
+    background-image:
+      radial-gradient(circle at 8% 0%, oklch(0.94 0.03 264 / 0.55), transparent 28rem),
+      radial-gradient(circle at 100% 100%, oklch(0.94 0.03 255 / 0.45), transparent 30rem);
+    background-attachment: fixed;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+@layer components {
+  .page-container {
+    @apply mx-auto w-full max-w-[1200px] space-y-6;
+  }
+
+  .section-title {
+    @apply text-base font-semibold tracking-tight text-foreground;
+  }
+
+  .subtle-ring {
+    @apply ring-1 ring-foreground/10;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: var(--border);
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
   }
 }
 

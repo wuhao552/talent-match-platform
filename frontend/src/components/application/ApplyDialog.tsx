@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { applicationApi } from '@/services/api'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -39,6 +39,7 @@ export function ApplyDialog({
   useEffect(() => {
     if (open) {
       // 优先用当前匹配关联的简历,否则默认第一份
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 弹窗打开时按上下文重置表单
       setResumeDocId(
         (defaultResumeId && resumes.some((r) => r.id === defaultResumeId)
           ? defaultResumeId
@@ -65,9 +66,12 @@ export function ApplyDialog({
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent>
-        <DialogHeader><DialogTitle>投递岗位</DialogTitle></DialogHeader>
-        <div className="space-y-3">
-          <div className="space-y-1">
+        <DialogHeader>
+          <DialogTitle>投递岗位</DialogTitle>
+          <DialogDescription>选择一份已解析的简历，系统会附带 AI 匹配结果供招聘方参考。</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
             <label className="text-sm font-medium">选择简历 *</label>
             {resumes.length === 0 ? (
               <p className="text-sm text-muted-foreground">暂无已解析的简历,请先上传简历</p>
@@ -82,8 +86,8 @@ export function ApplyDialog({
               </Select>
             )}
           </div>
-          <div className="space-y-1">
-            <label className="text-sm font-medium">求职信(可选)</label>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">求职信（可选）</label>
             <Textarea rows={4} value={coverLetter} onChange={(e) => setCoverLetter(e.target.value)} placeholder="简单介绍您的优势..." />
           </div>
         </div>

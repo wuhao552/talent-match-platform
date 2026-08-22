@@ -2,13 +2,14 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { matchingApi, parseStreamUrl, documentApi } from '@/services/api'
 import { useAuth } from '@/hooks/useAuth'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { SkillForceGraph } from '@/components/graph/SkillForceGraph'
 import {
-  ChevronLeft, ChevronDown, ChevronRight, CheckCircle2, XCircle,
-  Loader2, Brain, FileText, Copy, Check, Network,
+  ArrowLeft, ChevronDown, ChevronRight, CheckCircle2, XCircle,
+  Loader2, Brain, FileText, Copy, Check, GitBranch, Network,
 } from 'lucide-react'
 import type { MatchResult, Document, DocumentSkill } from '@/types'
 
@@ -220,7 +221,12 @@ function ParseStep({ step, streamText, expanded, onToggle }: {
   onToggle: () => void
 }) {
   const hasStream = !!(step.status === 'running' && streamText && streamText.length > 0)
-  const isSkillMatcher = (step.phase || step.agent) === 'skill_matcher'
+  const stepKey = step.phase || step.agent || ''
+  const isSkillMatcher = stepKey === 'skill_matcher'
+  const isLlmParseAgent = stepKey === 'document_parser' || stepKey === 'skill_extractor'
+  const rawResponse = typeof step.data?.rawResponse === 'string' && step.data.rawResponse.length > 0
+    ? step.data.rawResponse
+    : ''
 
   return (
     <div className="border rounded-lg overflow-hidden">
@@ -254,22 +260,37 @@ function ParseStep({ step, streamText, expanded, onToggle }: {
             </div>
           ) : null}
 
-          {step.status === 'done' && step.data?.rawResponse && !isSkillMatcher ? (
-            <div className="relative">
+          {step.status === 'done' && rawResponse && !isSkillMatcher ? (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">LLM 原始输出</p>
               <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded-md border bg-background p-3 text-[11px] leading-relaxed font-mono">
-                {String(step.data.rawResponse)}
+                {rawResponse}
               </pre>
             </div>
           ) : null}
 
-          {step.data && !isSkillMatcher ? (
-            <details className="text-xs">
-              <summary className="cursor-pointer text-muted-foreground hover:text-foreground">结构化数据</summary>
-              <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap rounded-md border bg-background p-3 text-[11px] font-mono">
-                {JSON.stringify(step.data, null, 2)}
-              </pre>
-            </details>
-          ) : null}
+          {step.data && !isSkillMatcher && !(isLlmParseAgent && rawResponse) ? (() => {
+            const textPreview = typeof step.data.textPreview === 'string' ? step.data.textPreview : ''
+            const structured = step.data.structured
+            const displayValue = textPreview
+              ? textPreview
+              : structured
+                ? JSON.stringify(structured, null, 2)
+                : JSON.stringify(step.data, null, 2)
+            const displayLabel = textPreview
+              ? '提取到的文本内容'
+              : structured
+                ? '结构化提取结果'
+                : '提取结果数据'
+            return (
+              <div className="space-y-1.5">
+                <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{displayLabel}</p>
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border bg-background p-3 text-[11px] leading-relaxed font-mono">
+                  {displayValue}
+                </pre>
+              </div>
+            )
+          })() : null}
 
           {step.error ? (
             <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
@@ -797,8 +818,79 @@ export function PipelineView() {
   const [matchResult, setMatchResult] = useState<MatchResult | null>(null)
   const [alreadyParsed, setAlreadyParsed] = useState(false)
   const [statusChecked, setStatusChecked] = useState(false)
+  const [backgroundParsing, setBackgroundParsing] = useState(false)
 
-  // ── On mount: check if document is already parsed ──
+  // ── 已解析文档：回填解析步骤、技能与匹配结果 ──
+  const hydrateParsedDocument = useCallback(async (id: string, doc: Document) => {
+    setDocument(doc)
+    try {
+      setSkills((await documentApi.getSkills(id)).data as DocumentSkill[])
+    } catch {
+      // 技能为空不影响流水线展示
+    }
+    setAlreadyParsed(true)
+
+    const storedPipeline = (doc.parsedJson as { pipeline?: PipelineStep[] } | null | undefined)?.pipeline
+    if (storedPipeline && storedPipeline.length > 0) {
+      const steps: Record<string, PipelineStep> = {}
+      for (const step of storedPipeline) {
+        const key = step.phase || step.agent || ''
+        if (!step.label && step.agent && PARSE_AGENT_LABELS[step.agent]) {
+          step.label = PARSE_AGENT_LABELS[step.agent]
+        }
+        if (step.status === 'done' || step.status === 'error' || !steps[key]) {
+          steps[key] = step
+        }
+      }
+      setParseSteps(steps)
+    }
+    setParseDone(true)
+
+    const isResume = doc.docType === 'resume'
+    let matches: MatchResult[]
+    try {
+      matches = isResume
+        ? (await matchingApi.getByResume(id)).data
+        : (await matchingApi.getByJob(id)).data
+    } catch {
+      matches = []
+    }
+
+    if (matches.length > 0) {
+      setMatchPairs(matches.map((m) => ({
+        resumeId: m.resumeDocId, jobId: m.jobDocId,
+        resumeFilename: m.resumeFilename || '',
+        jobFilename: m.jobFilename || '',
+        steps: [], llmCalls: [],
+        result: m,
+      })))
+      const embeddingTrace = matches[0]?.embeddingTrace ?? []
+      const matchedCount = embeddingTrace.filter((r) => r.bestMatch).length
+      setMatchPhaseSteps([
+        {
+          phase: 'algorithm_prefilter',
+          label: '算法预筛',
+          status: 'done',
+          summary: `算法分排序完成，选出 Top-${matches.length}`,
+          data: { candidateCount: matches.length },
+        },
+        {
+          phase: 'embedding_matching',
+          label: '语义匹配',
+          status: 'done',
+          summary: `${matchedCount} 项语义匹配`,
+          data: { embeddingResults: embeddingTrace },
+        },
+      ])
+      setPhase('done')
+      if (timerRef.current) clearInterval(timerRef.current)
+    } else {
+      setMatchPairs([])
+      setPhase('match')
+    }
+  }, [])
+
+  // ── On mount: check document status ──
   useEffect(() => {
     if (!docId) return
     const id = docId
@@ -809,71 +901,14 @@ export function PipelineView() {
         if (cancelled || !docRes.data) return
         const doc = docRes.data
         setDocument(doc)
-        setSkills((await documentApi.getSkills(id)).data as DocumentSkill[])
 
         if (doc.status === 'parsed') {
-          // Document already parsed — load stored pipeline steps and existing matches
-          setAlreadyParsed(true)
-          const storedPipeline = (doc.parsedJson as any)?.pipeline as PipelineStep[] | undefined
-          if (storedPipeline && storedPipeline.length > 0) {
-            const steps: Record<string, PipelineStep> = {}
-            for (const step of storedPipeline) {
-              const key = step.phase || step.agent || ''
-              // 为历史解析步骤注入中文标题
-              if (!step.label && step.agent && PARSE_AGENT_LABELS[step.agent]) {
-                step.label = PARSE_AGENT_LABELS[step.agent]
-              }
-              if (step.status === 'done' || step.status === 'error' || !steps[key]) {
-                steps[key] = step
-              }
-            }
-            setParseSteps(steps)
-          }
-          setParseDone(true)
-
-          // Load existing match results instead of re-running
-          const isResume = doc.docType === 'resume'
-          let matches: MatchResult[] = []
-          if (isResume) {
-            matches = (await matchingApi.getByResume(id)).data
-          } else {
-            matches = (await matchingApi.getByJob(id)).data
-          }
-          if (cancelled) return
-          if (matches.length > 0) {
-              setMatchPairs(matches.map((m) => ({
-                resumeId: m.resumeDocId, jobId: m.jobDocId,
-                resumeFilename: m.resumeFilename || '',
-                jobFilename: m.jobFilename || '',
-                steps: [], llmCalls: [],
-                result: m,
-              })))
-              // Synthesize global pipeline steps from existing matches
-              const embeddingTrace = matches[0]?.embeddingTrace ?? []
-              const matchedCount = embeddingTrace.filter((r) => r.bestMatch).length
-              setMatchPhaseSteps([
-                {
-                  phase: 'algorithm_prefilter',
-                  label: '算法预筛',
-                  status: 'done',
-                  summary: `算法分排序完成，选出 Top-${matches.length}`,
-                  data: { candidateCount: matches.length },
-                },
-                {
-                  phase: 'embedding_matching',
-                  label: '语义匹配',
-                  status: 'done',
-                  summary: `${matchedCount} 项语义匹配`,
-                  data: { embeddingResults: embeddingTrace },
-                },
-              ])
-              setPhase('done')
-              if (timerRef.current) clearInterval(timerRef.current)
-          } else {
-            // 没有现成匹配结果：进入 SSE 匹配流主动触发计算。
-            // 后端会优先使用已有缓存/结果，不会重复调用 LLM。
-            setPhase('match')
-          }
+          await hydrateParsedDocument(id, doc)
+        } else if (doc.status === 'parsing') {
+          // 批量上传会先在后台触发解析；这里不要重复打开 SSE，轮询等待完成即可
+          setBackgroundParsing(true)
+        } else {
+          setBackgroundParsing(false)
         }
       } catch (err) {
         console.error('[Pipeline] Failed to check existing doc:', err)
@@ -883,7 +918,53 @@ export function PipelineView() {
     }
     checkExisting()
     return () => { cancelled = true }
-  }, [docId])
+  }, [docId, hydrateParsedDocument])
+
+  // ── 后台解析轮询：批量上传后点击进入时，等待后台任务完成并回填结果 ──
+  useEffect(() => {
+    if (!docId || !backgroundParsing || !statusChecked) return
+    let cancelled = false
+
+    const poll = async () => {
+      try {
+        const docRes = await documentApi.get(docId)
+        if (cancelled || !docRes.data) return
+        const doc = docRes.data
+        setDocument(doc)
+
+        if (doc.status === 'parsed') {
+          setBackgroundParsing(false)
+          await hydrateParsedDocument(docId, doc)
+          return
+        }
+
+        if (doc.status === 'failed') {
+          setBackgroundParsing(false)
+          setParseDone(false)
+          setParseSteps((prev) => ({
+            ...prev,
+            text_extractor: {
+              agent: 'text_extractor',
+              label: '文本提取',
+              status: 'error',
+              summary: '文档解析失败',
+              error: doc.errorMessage || '解析失败',
+            },
+          }))
+          return
+        }
+      } catch (err) {
+        console.error('[Pipeline] Failed to poll background parse:', err)
+      }
+    }
+
+    poll()
+    const timer = setInterval(poll, 2000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [docId, backgroundParsing, statusChecked, hydrateParsedDocument])
 
   // Timer
   useEffect(() => {
@@ -955,9 +1036,9 @@ export function PipelineView() {
     return () => { cancelled = true }
   }, [document?.status, document?.docType, docId, user?.id])
 
-  // ── Phase 1: Parse Stream (skip if already parsed) ──
+  // ── Phase 1: Parse Stream (skip if already parsed or background parsing) ──
   useEffect(() => {
-    if (!docId || alreadyParsed || !statusChecked) return
+    if (!docId || alreadyParsed || !statusChecked || backgroundParsing) return
     const es = new EventSource(parseStreamUrl(docId))
 
     es.addEventListener('start', () => { startRef.current = Date.now() })
@@ -984,15 +1065,85 @@ export function PipelineView() {
       setPhase('match')
     })
 
-    es.addEventListener('error', () => {
-      setParseDone(true)
+    es.addEventListener('error', (e) => {
+      let message = ''
+      const me = e as MessageEvent
+      try {
+        if (me.data) message = JSON.parse(me.data)?.message || ''
+      } catch {
+        // 忽略无法解析的错误数据
+      }
       es.close()
+
+      // 批量上传场景：文档已在后台解析中，重复打开 SSE 会被后端拒绝。
+      // 切换到轮询模式，等待后台任务完成后回填解析结果。
+      if (message.includes('正在解析中')) {
+        setBackgroundParsing(true)
+        return
+      }
+
+      setParseDone(true)
       loadDocAndSkills()
       setPhase('match')
     })
 
     return () => es.close()
-  }, [docId, loadDocAndSkills, alreadyParsed, statusChecked])
+  }, [docId, loadDocAndSkills, alreadyParsed, statusChecked, backgroundParsing])
+
+  // ── 已解析但暂无匹配结果时：轮询自动匹配结果 ──
+  useEffect(() => {
+    if (!docId || !alreadyParsed || phase !== 'match' || matchPairs.length > 0 || !document) return
+    let cancelled = false
+
+    const poll = async () => {
+      try {
+        const isResume = document.docType === 'resume'
+        const res = isResume
+          ? await matchingApi.getByResume(docId)
+          : await matchingApi.getByJob(docId)
+        if (cancelled) return
+        const matches = res.data
+        if (matches.length === 0) return
+
+        setMatchPairs(matches.map((m) => ({
+          resumeId: m.resumeDocId, jobId: m.jobDocId,
+          resumeFilename: m.resumeFilename || '',
+          jobFilename: m.jobFilename || '',
+          steps: [], llmCalls: [],
+          result: m,
+        })))
+        const embeddingTrace = matches[0]?.embeddingTrace ?? []
+        const matchedCount = embeddingTrace.filter((r) => r.bestMatch).length
+        setMatchPhaseSteps([
+          {
+            phase: 'algorithm_prefilter',
+            label: '算法预筛',
+            status: 'done',
+            summary: `算法分排序完成，选出 Top-${matches.length}`,
+            data: { candidateCount: matches.length },
+          },
+          {
+            phase: 'embedding_matching',
+            label: '语义匹配',
+            status: 'done',
+            summary: `${matchedCount} 项语义匹配`,
+            data: { embeddingResults: embeddingTrace },
+          },
+        ])
+        setPhase('done')
+        if (timerRef.current) clearInterval(timerRef.current)
+      } catch {
+        // 自动匹配尚未完成，下一轮继续检查
+      }
+    }
+
+    poll()
+    const timer = setInterval(poll, 2500)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [docId, alreadyParsed, phase, matchPairs.length, document])
 
   // ── Phase 2: Match Stream (only for live parsing, not for already-parsed docs) ──
   useEffect(() => {
@@ -1133,19 +1284,20 @@ export function PipelineView() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" onClick={() => navigate('/dashboard')}>
-          <ChevronLeft className="h-4 w-4" />
-        </Button>
-        <div className="flex-1">
-          <h1 className="text-xl font-bold">人才匹配处理流水线</h1>
-          <p className="text-sm text-muted-foreground">
-            {phase === 'parse' ? '阶段一: 文档解析' : phase === 'match' ? '阶段二: LLM 匹配评估' : '处理完成'}
-          </p>
-        </div>
-        <span className="text-sm text-muted-foreground tabular-nums">{formatTime(elapsed)}</span>
-      </div>
+      <PageHeader
+        title="人才匹配处理流水线"
+        description={phase === 'parse' ? '阶段一：文档解析' : phase === 'match' ? '阶段二：LLM 匹配评估' : '处理完成'}
+        icon={GitBranch}
+        actions={
+          <>
+            <span className="px-2 text-sm tabular-nums text-muted-foreground">{formatTime(elapsed)}</span>
+            <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')}>
+              <ArrowLeft className="size-3.5" />
+              返回
+            </Button>
+          </>
+        }
+      />
 
       {/* Phase indicator */}
       <div className="flex items-center gap-2">
@@ -1166,6 +1318,17 @@ export function PipelineView() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
+          {backgroundParsing && (
+            <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30">
+              <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-amber-600" />
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-amber-800 dark:text-amber-300">文档正在后台解析中</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-amber-700/80 dark:text-amber-400">
+                  该文档已由上传任务启动 AI 解析，请稍候。完成后会自动加载提取内容与能力图谱。
+                </p>
+              </div>
+            </div>
+          )}
           {parseStepList.map(({ phase: p, label }) => {
             const step = parseSteps[p]
             const isStreaming = step?.status === 'running' && parseStream[p] && parseStream[p].length > 0

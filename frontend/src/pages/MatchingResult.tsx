@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { matchingApi, documentApi, jobApi, applicationApi } from '@/services/api'
 import { toast } from 'sonner'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { ApplyDialog } from '@/components/application/ApplyDialog'
 import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -10,7 +11,7 @@ import { Button } from '@/components/ui/button'
 import { scoreColor, proficiencyLabel } from '@/lib/utils'
 import { SkillForceGraph } from '@/components/graph/SkillForceGraph'
 import {
-  ChevronLeft, MapPin, Building, Clock, AlertTriangle, RefreshCw,
+  ArrowLeft, MapPin, Building, Clock, AlertTriangle, RefreshCw,
   CheckCircle2, XCircle, Loader2, Brain, GitBranch, Zap,
   TrendingUp, ArrowRightLeft, ListChecks, Gift, Send,
 } from 'lucide-react'
@@ -68,6 +69,7 @@ export function MatchingResult() {
 
   useEffect(() => {
     if (!id) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 首次进入拉取匹配结果
     setLoading(true)
     matchingApi.getResult(id)
       .then(async (res) => {
@@ -134,7 +136,7 @@ export function MatchingResult() {
   // JD 结构化内容:企业端可直接读文档;求职者端无权读企业文档,
   // 回退到匹配结果接口返回的 jobStructured 摘要(后端已对双方开放)
   const jobStructured =
-    (jobDoc?.parsedJson as any)?.structured || match.jobStructured || {}
+    ((jobDoc?.parsedJson as { structured?: Record<string, unknown> } | null | undefined)?.structured) || match.jobStructured || {}
   // JD 结构化字段(与后端解析结果一致)
   const asStringArray = (v: unknown): string[] =>
     Array.isArray(v)
@@ -182,27 +184,28 @@ export function MatchingResult() {
   const llm = match.llmAssessment
 
   return (
-    <div className="mx-auto max-w-7xl">
-      <div className="flex flex-col lg:flex-row gap-6 items-start">
-        <div className="flex-1 min-w-0 space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" onClick={() => navigate(-1 as any)}>
-          <ChevronLeft className="h-4 w-4" />
-        </Button>
-        <div className="flex-1">
-          <h1 className="text-xl font-bold">{match.jobTitle || match.jobFilename || '职位详情'}</h1>
-          <p className="text-sm text-muted-foreground">
-            深度匹配 · {match.matchDetails?.length || 0} 项技能匹配
-          </p>
-        </div>
-        <div className="text-right">
-          <p className={`text-3xl font-bold tabular-nums ${scoreColor(match.overallScore)}`}>
-            {Math.round(match.overallScore)}分
-          </p>
-          <p className="text-[10px] text-muted-foreground">最终匹配度</p>
-        </div>
-      </div>
+    <div className="mx-auto max-w-[1200px]">
+      <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+        <div className="min-w-0 flex-1 space-y-6">
+      <PageHeader
+        title={match.jobTitle || match.jobFilename || '职位详情'}
+        description={`深度匹配 · ${match.matchDetails?.length || 0} 项技能匹配`}
+        icon={Brain}
+        actions={
+          <>
+            <Button variant="outline" size="sm" onClick={() => navigate(-1 as never)}>
+              <ArrowLeft className="size-3.5" />
+              返回
+            </Button>
+            <div className="text-right">
+              <p className={`text-2xl font-bold tabular-nums leading-none ${scoreColor(match.overallScore)}`}>
+                {Math.round(match.overallScore)}分
+              </p>
+              <p className="text-[10px] text-muted-foreground">最终匹配度</p>
+            </div>
+          </>
+        }
+      />
 
       {/* LLM 评估失败降级提示 */}
       {breakdown?.matchStatus === 'fallback' && (
@@ -258,16 +261,16 @@ export function MatchingResult() {
         <CardContent className="space-y-4 pt-5">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
             {match.companyName && <span className="flex items-center gap-1"><Building className="h-3.5 w-3.5" />{match.companyName}</span>}
-            {(jobStructured.location || match.jobCity) && <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{String(jobStructured.location || match.jobCity)}</span>}
-            {jobStructured.companyIndustry && <span>行业：{String(jobStructured.companyIndustry)}</span>}
-            {jobStructured.companySize && <span>规模：{String(jobStructured.companySize)}</span>}
-            {jobStructured.department && <span>部门：{String(jobStructured.department)}</span>}
-            {jobStructured.salaryRange && <span className="font-medium text-foreground">{String(jobStructured.salaryRange)}</span>}
-            {jobStructured.experienceRequired && <span>经验：{String(jobStructured.experienceRequired)}</span>}
-            {jobStructured.educationRequired && <span>学历：{String(jobStructured.educationRequired)}</span>}
+            {(Boolean(jobStructured.location) || match.jobCity) && <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{String(jobStructured.location || match.jobCity)}</span>}
+            {Boolean(jobStructured.companyIndustry) && <span>行业：{String(jobStructured.companyIndustry)}</span>}
+            {Boolean(jobStructured.companySize) && <span>规模：{String(jobStructured.companySize)}</span>}
+            {Boolean(jobStructured.department) && <span>部门：{String(jobStructured.department)}</span>}
+            {Boolean(jobStructured.salaryRange) && <span className="font-medium text-foreground">{String(jobStructured.salaryRange)}</span>}
+            {Boolean(jobStructured.experienceRequired) && <span>经验：{String(jobStructured.experienceRequired)}</span>}
+            {Boolean(jobStructured.educationRequired) && <span>学历：{String(jobStructured.educationRequired)}</span>}
             {(jobDoc?.createdAt || match.createdAt) && <span className="flex items-center gap-1"><Clock className="h-3.5 w-3.5" />{new Date(jobDoc?.createdAt || match.createdAt).toLocaleDateString('zh-CN')}</span>}
           </div>
-        {(match.jobTopSkills?.length || jobStructured.summary || jobResponsibilities.length > 0 || jobBenefits.length > 0) && (
+        {(match.jobTopSkills?.length || Boolean(jobStructured.summary) || jobResponsibilities.length > 0 || jobBenefits.length > 0) && (
           <div className="space-y-4">
             {match.jobTopSkills && match.jobTopSkills.length > 0 && (
               <div>
@@ -275,7 +278,7 @@ export function MatchingResult() {
                 <div className="flex flex-wrap gap-1.5">{match.jobTopSkills.map((s, i) => <Badge key={i} variant="secondary" className="text-[11px]">{s}</Badge>)}</div>
               </div>
             )}
-            {jobStructured.summary && (
+            {Boolean(jobStructured.summary) && (
               <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">{String(jobStructured.summary)}</p>
             )}
             {jobResponsibilities.length > 0 && (

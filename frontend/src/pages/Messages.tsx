@@ -3,11 +3,13 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { messageApi } from '@/services/api'
 import type { ConversationListItem, Message } from '@/types'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { toast } from 'sonner'
-import { Send, MessageSquare, ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Loader2, MessageCircle, MessageSquare, Send } from 'lucide-react'
 
 export function Messages() {
   const { user } = useAuth()
@@ -24,33 +26,39 @@ export function Messages() {
     try {
       const res = await messageApi.listConversations()
       setConversations(res.data)
-      // 如果 URL 指定了 conv 且没有选中,自动选中
-      const urlConv = searchParams.get('conv')
-      if (urlConv && !selectedId) setSelectedId(urlConv)
-    } catch (e: any) {
-      toast.error(e?.message || '加载会话失败')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '加载会话失败')
     } finally {
       setLoading(false)
     }
-  }, [searchParams, selectedId])
+  }, [])
 
   const loadMessages = useCallback(async () => {
     if (!selectedId) return
     try {
       const res = await messageApi.getMessages(selectedId, { size: 100 })
       setMessages(res.data.items)
-      // 刷新会话列表(清未读)
       const convRes = await messageApi.listConversations()
       setConversations(convRes.data)
-    } catch (e: any) {
-      toast.error(e?.message || '加载消息失败')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '加载消息失败')
     }
   }, [selectedId])
 
-  useEffect(() => { loadConversations() }, [loadConversations])
-  useEffect(() => { if (selectedId) loadMessages() }, [selectedId, loadMessages])
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 首次进入拉取会话列表
+    loadConversations()
+  }, [loadConversations])
+  useEffect(() => {
+    const urlConv = searchParams.get('conv')
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 同步 URL 中的会话参数
+    if (urlConv && urlConv !== selectedId) setSelectedId(urlConv)
+  }, [searchParams, selectedId])
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 切换会话时拉取消息
+    if (selectedId) loadMessages()
+  }, [selectedId, loadMessages])
 
-  // 轮询刷新(5秒)
   useEffect(() => {
     const t = setInterval(() => {
       loadConversations()
@@ -71,8 +79,8 @@ export function Messages() {
     try {
       await messageApi.sendMessage({ conversationId: selectedId, content })
       await loadMessages()
-    } catch (e: any) {
-      toast.error(e?.message || '发送失败')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '发送失败')
       setInput(content)
     } finally {
       setSending(false)
@@ -84,50 +92,66 @@ export function Messages() {
     setSearchParams({ conv: id })
   }
 
+  const closeConversation = () => {
+    setSelectedId('')
+    setSearchParams({})
+  }
+
   const selectedConv = conversations.find((c) => c.id === selectedId)
 
   return (
-    // 固定高度布局:整体占满视口剩余空间,聊天区不随消息数量变化,
-    // 消息列表内部滚动,输入框始终固定在底部可见
-    <div className="flex h-[calc(100vh-8rem)] flex-col gap-4">
-      <div className="flex items-center justify-between shrink-0">
-        <h1 className="text-2xl font-bold flex items-center gap-2"><MessageSquare className="h-6 w-6" />消息中心</h1>
-      </div>
+    <div className="flex h-[calc(100vh-7.5rem)] flex-col gap-4">
+      <PageHeader title="消息中心" description="与招聘方或候选人保持沟通" icon={MessageSquare} />
 
-      <div className="flex gap-4 flex-1 min-h-0">
+      <div className="flex min-h-0 flex-1 gap-4">
         {/* 会话列表 */}
-        <Card className="w-72 shrink-0 overflow-hidden flex flex-col">
-          <div className="p-3 border-b font-medium text-sm">会话列表</div>
-          <div className="flex-1 overflow-auto">
+        <Card className={`w-full shrink-0 overflow-hidden md:w-72 ${selectedId ? 'hidden md:flex' : 'flex'}`}>
+          <div className="flex h-12 items-center justify-between border-b px-4">
+            <span className="text-sm font-semibold">会话</span>
+            <span className="text-xs tabular-nums text-muted-foreground">{conversations.length} 个</span>
+          </div>
+          <div className="scrollbar-thin flex-1 overflow-y-auto">
             {loading ? (
-              <p className="p-4 text-center text-sm text-muted-foreground">加载中...</p>
+              <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                加载中...
+              </div>
             ) : conversations.length === 0 ? (
-              <p className="p-4 text-center text-sm text-muted-foreground">暂无会话</p>
+              <div className="flex flex-col items-center px-4 py-12 text-center text-muted-foreground">
+                <MessageCircle className="size-8 opacity-30" />
+                <p className="mt-2 text-sm">暂无会话</p>
+              </div>
             ) : (
               conversations.map((c) => (
                 <button
                   key={c.id}
+                  type="button"
                   onClick={() => selectConv(c.id)}
-                  className={`w-full text-left p-3 border-b hover:bg-muted/50 transition-colors ${
+                  className={`flex w-full items-start gap-3 border-b px-4 py-3.5 text-left transition-colors last:border-b-0 hover:bg-muted/50 ${
                     selectedId === c.id ? 'bg-primary-soft' : ''
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-sm truncate">
-                      {c.otherUser?.username || '未知用户'}
+                  <Avatar className="size-9 shrink-0">
+                    <AvatarFallback className="bg-primary/10 text-xs font-bold text-primary">
+                      {(c.otherUser?.username || '?').charAt(0).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center justify-between gap-2">
+                      <span className="truncate text-sm font-semibold">{c.otherUser?.username || '未知用户'}</span>
+                      {c.unread > 0 && (
+                        <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-primary-foreground">
+                          {c.unread > 99 ? '99+' : c.unread}
+                        </span>
+                      )}
                     </span>
-                    {c.unread > 0 && (
-                      <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1 text-[10px] text-destructive-foreground">
-                        {c.unread}
-                      </span>
+                    {c.otherUser?.companyName && (
+                      <span className="block truncate text-xs text-muted-foreground">{c.otherUser.companyName}</span>
                     )}
-                  </div>
-                  {c.otherUser?.companyName && (
-                    <p className="text-xs text-muted-foreground truncate">{c.otherUser.companyName}</p>
-                  )}
-                  {c.lastMessage && (
-                    <p className="text-xs text-muted-foreground truncate mt-0.5">{c.lastMessage.content}</p>
-                  )}
+                    {c.lastMessage && (
+                      <span className="mt-1 block truncate text-xs text-muted-foreground/80">{c.lastMessage.content}</span>
+                    )}
+                  </span>
                 </button>
               ))
             )}
@@ -135,32 +159,40 @@ export function Messages() {
         </Card>
 
         {/* 聊天区 */}
-        <Card className="flex-1 flex flex-col min-h-0">
+        <Card className={`min-h-0 flex-1 flex-col ${selectedId ? 'flex' : 'hidden md:flex'}`}>
           {selectedId && selectedConv ? (
             <>
-              <div className="flex items-center gap-2 p-3 border-b">
-                <Button variant="ghost" size="sm" className="md:hidden" onClick={() => setSelectedId('')}>
-                  <ArrowLeft className="h-4 w-4" />
+              <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+                <Button variant="ghost" size="icon-sm" className="md:hidden" onClick={closeConversation}>
+                  <ArrowLeft className="size-4" />
                 </Button>
-                <span className="font-medium">{selectedConv.otherUser?.username || '未知'}</span>
-                {selectedConv.otherUser?.companyName && (
-                  <span className="text-sm text-muted-foreground">· {selectedConv.otherUser.companyName}</span>
-                )}
+                <Avatar className="size-8">
+                  <AvatarFallback className="bg-primary/10 text-xs font-bold text-primary">
+                    {(selectedConv.otherUser?.username || '?').charAt(0).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">{selectedConv.otherUser?.username || '未知用户'}</p>
+                  {selectedConv.otherUser?.companyName && (
+                    <p className="truncate text-xs text-muted-foreground">{selectedConv.otherUser.companyName}</p>
+                  )}
+                </div>
               </div>
-              <div ref={scrollRef} className="flex-1 overflow-auto p-4 space-y-2">
+
+              <div ref={scrollRef} className="scrollbar-thin flex-1 space-y-3 overflow-y-auto bg-muted/20 p-4">
                 {messages.length === 0 ? (
-                  <p className="py-8 text-center text-sm text-muted-foreground">暂无消息，发送第一条消息吧</p>
+                  <p className="py-10 text-center text-sm text-muted-foreground">暂无消息，发送第一条消息吧</p>
                 ) : (
                   messages.map((m) => {
                     const mine = m.senderId === user?.id
                     return (
                       <div key={m.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${
-                          mine ? 'bg-primary text-primary-foreground' : 'bg-muted'
+                        <div className={`max-w-[78%] rounded-2xl px-3.5 py-2.5 text-sm shadow-sm ${
+                          mine ? 'rounded-br-md bg-primary text-primary-foreground' : 'rounded-bl-md border bg-card text-foreground'
                         }`}>
                           <p className="whitespace-pre-wrap break-words">{m.content}</p>
-                          <p className={`text-[10px] mt-1 ${mine ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
-                            {new Date(m.createdAt).toLocaleTimeString()}
+                          <p className={`mt-1 text-right text-[10px] ${mine ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
+                            {new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
                           </p>
                         </div>
                       </div>
@@ -168,23 +200,27 @@ export function Messages() {
                   })
                 )}
               </div>
-              <div className="p-3 border-t flex gap-2">
-                <Input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
-                  placeholder="输入消息..."
-                  disabled={sending}
-                />
-                <Button onClick={handleSend} disabled={sending || !input.trim()}>
-                  <Send className="h-4 w-4" />
-                </Button>
+
+              <div className="shrink-0 border-t p-3">
+                <div className="flex gap-2">
+                  <Input
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
+                    placeholder="输入消息，按 Enter 发送..."
+                    disabled={sending}
+                    className="h-10"
+                  />
+                  <Button className="h-10" onClick={handleSend} disabled={sending || !input.trim()} aria-label="发送消息">
+                    <Send className="size-4" />
+                  </Button>
+                </div>
               </div>
             </>
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-2">
-              <MessageSquare className="h-12 w-12 opacity-30" />
-              <p>选择左侧会话开始聊天</p>
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
+              <MessageSquare className="size-12 opacity-30" />
+              <p className="text-sm">选择左侧会话开始聊天</p>
             </div>
           )}
         </Card>

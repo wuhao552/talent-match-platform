@@ -3,12 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useDocuments } from '@/hooks/useDocuments'
 import { documentApi } from '@/services/api'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { formatSize, ALLOWED_EXTS } from '@/lib/utils'
 import { toast } from 'sonner'
+import { CloudUpload, FileText, Loader2, Upload, X } from 'lucide-react'
 
 interface FileUploadProps {
   mode: 'single' | 'multi'
@@ -42,8 +43,8 @@ export function FileUpload({ mode, docType, requiredRole, title, description }: 
       setFiles([valid[0]])
     } else {
       setFiles((prev) => {
-        const existing = new Set(prev.map((f) => f.name + f.size))
-        const added = valid.filter((f) => !existing.has(f.name + f.size))
+        const existing = new Set(prev.map((f) => `${f.name}-${f.size}`))
+        const added = valid.filter((f) => !existing.has(`${f.name}-${f.size}`))
         return [...prev, ...added]
       })
     }
@@ -81,95 +82,116 @@ export function FileUpload({ mode, docType, requiredRole, title, description }: 
 
   if (user?.role !== requiredRole) {
     return (
-      <Alert variant="destructive">
-        <AlertDescription>
-          {requiredRole === 'individual' ? '仅个人用户可上传简历' : '仅企业用户可发布职位'}
-        </AlertDescription>
-      </Alert>
+      <div className="page-container">
+        <Alert variant="destructive">
+          <AlertDescription>
+            {requiredRole === 'individual' ? '仅个人用户可上传简历' : '仅企业用户可发布职位'}
+          </AlertDescription>
+        </Alert>
+      </div>
     )
   }
 
+  const isSingleSelected = mode === 'single' && files.length === 1
+
   return (
-    <div className="mx-auto max-w-2xl space-y-6 pt-8">
-      <div>
-        <h1 className="text-2xl font-bold">{title}</h1>
-        <p className="text-muted-foreground">{description}</p>
-      </div>
+    <div className="mx-auto max-w-3xl">
+      <PageHeader title={title} description={description} icon={Upload} />
 
       <Card>
-        <CardHeader>
-          <CardTitle>选择文件</CardTitle>
+        <CardHeader className="border-b">
+          <CardTitle>上传文档</CardTitle>
           <CardDescription>
             {mode === 'multi'
-              ? '支持 PDF、DOC、DOCX，单文件 ≤ 10MB，可多选或拖拽文件夹'
-              : '支持 PDF、DOC、DOCX 格式，大小不超过 10MB'}
+              ? '支持 PDF / DOC / DOCX，可一次选择多个文件；AI 将逐个解析并生成匹配结果'
+              : '支持 PDF / DOC / DOCX 格式，单个文件不超过 10MB'}
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+
+        <CardContent className="space-y-5 pt-5">
+          {/* Dropzone */}
           <div
+            role="button"
+            tabIndex={0}
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                fileInputRef.current?.click()
+              }
+            }}
             onDrop={handleDrop}
             onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
             onDragLeave={() => setDragOver(false)}
-            className={`flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-8 transition-colors ${
-              dragOver ? 'border-primary bg-primary/5' : 'border-muted-foreground/25'
+            className={`flex flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-10 text-center outline-none transition-all focus-visible:ring-3 focus-visible:ring-ring/40 ${
+              dragOver ? 'border-primary bg-primary/5 scale-[1.01]' : 'border-border bg-muted/20 hover:border-primary/40 hover:bg-primary/5'
             }`}
           >
-            {files.length > 0 && mode === 'single' ? (
-              <div className="text-center">
-                <p className="text-lg font-medium">{files[0].name}</p>
-                <p className="text-sm text-muted-foreground">{formatSize(files[0].size)}</p>
-                <Button variant="ghost" size="sm" className="mt-2" onClick={() => setFiles([])}>
-                  重新选择
-                </Button>
-              </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              accept=".pdf,.doc,.docx"
+              multiple={mode === 'multi'}
+              onChange={(e) => {
+                if (e.target.files) addFiles(e.target.files)
+                e.target.value = ''
+              }}
+            />
+
+            <span className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/15">
+              {dragOver ? <CloudUpload className="size-6 animate-bounce" /> : <FileText className="size-6" />}
+            </span>
+
+            {isSingleSelected ? (
+              <>
+                <p className="mt-4 text-sm font-semibold">{files[0].name}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{formatSize(files[0].size)} · 点击可重新选择</p>
+              </>
             ) : (
               <>
-                <p className="mb-1 text-3xl font-bold text-muted-foreground">PDF/DOCX</p>
-                <p className="text-sm font-medium">
-                  {mode === 'multi' ? '拖拽文件或文件夹到此处' : '拖拽文件到此处'}
+                <p className="mt-4 text-sm font-semibold">
+                  {dragOver ? '松开鼠标开始上传' : mode === 'multi' ? '拖拽多个文件到此处' : '拖拽文件到此处'}
                 </p>
-                <p className="text-xs text-muted-foreground">
-                  {mode === 'multi' ? '或点击下方按钮选择多个文件' : '或点击下方按钮选择文件'}
+                <p className="mt-1 text-xs text-muted-foreground">
+                  或 <span className="font-medium text-primary">点击选择文件</span>
+                  {mode === 'multi' && '（支持批量）'}
                 </p>
-                <Button variant="outline" className="mt-4" onClick={() => fileInputRef.current?.click()}>
-                  选择文件
-                </Button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  className="hidden"
-                  accept=".pdf,.doc,.docx"
-                  multiple={mode === 'multi'}
-                  onChange={(e) => {
-                    if (e.target.files) addFiles(e.target.files)
-                    e.target.value = ''
-                  }}
-                />
               </>
             )}
           </div>
 
-          {mode === 'multi' && files.length > 0 && (
-            <div className="space-y-2">
+          {/* Selected files */}
+          {files.length > 0 && (
+            <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">已选 <strong>{files.length}</strong> 个文件</p>
-                <Button variant="ghost" size="xs" onClick={() => setFiles([])}>清空</Button>
+                <p className="text-sm text-muted-foreground">
+                  已选择 <span className="font-semibold text-foreground">{files.length}</span> 个文件
+                </p>
+                <Button variant="ghost" size="sm" onClick={() => setFiles([])} disabled={uploading}>
+                  <X className="size-3.5" />
+                  清空
+                </Button>
               </div>
-              <div className="max-h-64 space-y-1 overflow-auto rounded-lg border">
+
+              <div className="scrollbar-thin max-h-64 space-y-2 overflow-y-auto">
                 {files.map((f, i) => (
-                  <div key={`${f.name}-${f.size}-${i}`} className="flex items-center gap-3 px-3 py-2 text-sm">
-                    <span className="w-5 text-center text-xs text-muted-foreground tabular-nums">{i + 1}</span>
-                    <span className="flex-1 truncate font-medium">{f.name}</span>
-                    <span className="text-xs text-muted-foreground tabular-nums">{formatSize(f.size)}</span>
-                    <button
+                  <div key={`${f.name}-${f.size}-${i}`} className="flex items-center gap-3 rounded-xl border bg-card px-3.5 py-2.5">
+                    <FileText className="size-4 shrink-0 text-primary" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{f.name}</p>
+                      <p className="text-xs text-muted-foreground">{formatSize(f.size)}</p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
                       className="text-muted-foreground hover:text-destructive"
                       onClick={() => removeFile(i)}
                       disabled={uploading}
+                      aria-label={`移除 ${f.name}`}
                     >
-                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
+                      <X className="size-3.5" />
+                    </Button>
                   </div>
                 ))}
               </div>
@@ -177,26 +199,20 @@ export function FileUpload({ mode, docType, requiredRole, title, description }: 
           )}
 
           {files.length > 0 && (
-            <Button className="w-full" onClick={handleUpload} disabled={uploading}>
+            <Button className="h-10 w-full" onClick={handleUpload} disabled={uploading}>
               {uploading ? (
-                <span className="flex items-center gap-2">
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                <>
+                  <Loader2 className="size-4 animate-spin" />
                   上传并解析中...
-                </span>
-              ) : mode === 'multi' ? (
-                `上传并解析 ${files.length} 个文件`
+                </>
               ) : (
-                '上传并解析'
+                <>
+                  <CloudUpload className="size-4" />
+                  {mode === 'multi' ? `上传并解析 ${files.length} 个文件` : '上传并解析'}
+                </>
               )}
             </Button>
           )}
-
-          <div className="flex gap-2 text-xs text-muted-foreground">
-            <Badge variant="outline">PDF</Badge>
-            <Badge variant="outline">DOC</Badge>
-            <Badge variant="outline">DOCX</Badge>
-            <span className="flex items-center">支持以上格式</span>
-          </div>
         </CardContent>
       </Card>
     </div>
