@@ -80,8 +80,10 @@ export function MatchingResult() {
           documentApi.getSkills(res.data.jobDocId).then((r) => r.data).catch(() => [] as DocumentSkill[]),
         ])
         setJobDoc(job)
-        setSkills(sk)
-        setJobSkills(jsk)
+        // 求职者/企业只能读取自己拥有的文档，对方文档技能接口会返回无权限；
+        // 匹配结果接口已附带双方完整技能（含未匹配技能），这里自动兜底。
+        setSkills(sk.length > 0 ? sk : (res.data.resumeSkills || []))
+        setJobSkills(jsk.length > 0 ? jsk : (res.data.jobSkills || []))
       })
       .catch(() => setError('未找到该匹配结果'))
       .finally(() => setLoading(false))

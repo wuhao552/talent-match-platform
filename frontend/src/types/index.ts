@@ -61,6 +61,10 @@ export interface MatchResult {
   jobTitle?: string
   jobCity?: string
   jobTopSkills?: string[]
+  /** 完整简历技能(含未匹配技能),来自匹配结果接口,双方可见 */
+  resumeSkills?: DocumentSkill[]
+  /** 完整岗位技能(含未匹配技能),来自匹配结果接口,双方可见 */
+  jobSkills?: DocumentSkill[]
   /** JD 结构化摘要(薪资/职责/要求/福利等),来自匹配结果接口,双方可见 */
   jobStructured?: Record<string, unknown> | null
 }
