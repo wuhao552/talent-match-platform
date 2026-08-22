@@ -17,6 +17,7 @@ import { Document } from '../document/document.entity';
 import { DocumentSkill } from '../skill/document-skill.entity';
 import { Skill } from '../skill/skill.entity';
 import { User } from '../user/user.entity';
+import { mergeUnmatchedSkillsFromParsedJson } from '../skill/skill-display.utils';
 import { LlmMatchingService } from './llm-matching.service';
 import { EmbeddingService } from '../llm/embedding.service';
 
@@ -36,12 +37,16 @@ export interface EnrichedMatch {
   candidateName: string;
   candidateCity: string;
   candidateTopSkills: string[];
+  /** 完整简历技能(含未匹配技能)，求职者/企业均可在匹配结果页查看 */
+  resumeSkills: DocumentSkill[];
   jobDocId: string;
   jobFilename: string;
   companyName: string;
   jobTitle: string;
   jobCity: string;
   jobTopSkills: string[];
+  /** 完整岗位技能(含未匹配技能)，求职者无需直接读取企业文档即可用于能力图谱 */
+  jobSkills: DocumentSkill[];
   /** JD 结构化摘要(薪资/职责/要求/福利等),供匹配双方查看,无需访问对方文档 */
   jobStructured: Record<string, unknown> | null;
 }
@@ -1408,11 +1413,18 @@ export class MatchingService {
     const users =
       userIds.length > 0 ? await this.userRepo.findByIds(userIds) : [];
     const userMap = new Map(users.map((u) => [u.id, u]));
-    const skillsByDoc = new Map<string, DocumentSkill[]>();
+    const savedSkillsByDoc = new Map<string, DocumentSkill[]>();
     for (const s of allSkills) {
-      const a = skillsByDoc.get(s.documentId) || [];
+      const a = savedSkillsByDoc.get(s.documentId) || [];
       a.push(s);
-      skillsByDoc.set(s.documentId, a);
+      savedSkillsByDoc.set(s.documentId, a);
+    }
+
+    // 补全历史文档中未落库的未匹配技能，能力图谱需要展示完整岗位/简历技能。
+    const skillsByDoc = new Map<string, DocumentSkill[]>();
+    for (const doc of docs) {
+      const saved = savedSkillsByDoc.get(doc.id) || [];
+      skillsByDoc.set(doc.id, mergeUnmatchedSkillsFromParsedJson(doc, saved));
     }
 
     return results.flatMap((r) => {
@@ -1453,6 +1465,7 @@ export class MatchingService {
             .slice(0, 6)
             .map((s) => s.skillName || s.skill?.name || '')
             .filter(Boolean),
+          resumeSkills: skillsByDoc.get(r.resumeDocId) || [],
           jobDocId: r.jobDocId,
           jobFilename: jobDoc.originalFilename,
           companyName:
@@ -1497,6 +1510,7 @@ export class MatchingService {
             .slice(0, 6)
             .map((s) => s.skillName || s.skill?.name || '')
             .filter(Boolean),
+          jobSkills: skillsByDoc.get(r.jobDocId) || [],
           // JD 结构化内容随匹配结果一起返回:求职者无权直接读取企业文档,
           // 但应能看到该岗位的完整信息(薪资/职责/要求/福利等)
           jobStructured:

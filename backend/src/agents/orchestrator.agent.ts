@@ -255,6 +255,8 @@ export class OrchestratorAgent {
       extractedName?: string;
     }[] = [];
     const seenSkillIds = new Set<number>();
+    const unmatchedSkills: Array<{ name: string; proficiency: string }> = [];
+    const seenUnmatchedNames = new Set<string>();
     const matchingLogs: Array<{
       extracted: string;
       canonical: string | null;
@@ -276,6 +278,15 @@ export class OrchestratorAgent {
             proficiency: s.proficiency,
             name: match.name,
             extractedName: s.name,
+          });
+        }
+      } else {
+        const name = s.name?.trim();
+        if (name && !seenUnmatchedNames.has(name.toLowerCase())) {
+          seenUnmatchedNames.add(name.toLowerCase());
+          unmatchedSkills.push({
+            name,
+            proficiency: s.proficiency || 'intermediate',
           });
         }
       }
@@ -312,9 +323,10 @@ export class OrchestratorAgent {
     emit({
       agent: 'skill_matcher',
       status: 'done',
-      summary: `技能匹配完成: ${mappedSkills.length}/${extractedSkills.length} 已匹配`,
+      summary: `技能匹配完成: ${mappedSkills.length}/${extractedSkills.length} 已匹配, ${unmatchedSkills.length} 个未匹配`,
       data: {
         matched: mappedSkills.length,
+        unmatched: unmatchedSkills.length,
         total: extractedSkills.length,
         logs: matchingLogs,
         methodSummary,
@@ -337,12 +349,13 @@ export class OrchestratorAgent {
         extractedSkills,
         skillLlmDetail,
         mappedSkills,
+        unmatchedSkills,
         matchingLogs,
         pipelineSteps: collectedSteps,
       },
       summary: [
         parseResult.summary,
-        `技能提取: ${extractedSkills.length} 个 (匹配 ${mappedSkills.length} 个)`,
+        `技能提取: ${extractedSkills.length} 个 (匹配 ${mappedSkills.length} 个, 未匹配 ${unmatchedSkills.length} 个)`,
       ].join(' | '),
     };
   }

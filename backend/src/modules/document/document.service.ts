@@ -19,6 +19,7 @@ import {
 } from '../../agents/orchestrator.agent';
 import { GraphLayoutService } from '../graph/graph-layout.service';
 import { inferCategory } from '../skill/skill.utils';
+import { mergeUnmatchedSkillsFromParsedJson } from '../skill/skill-display.utils';
 import { SkillMatcherService } from '../skill/skill-matcher.service';
 import { MatchingService } from '../matching/matching.service';
 import { JobService } from '../job/job.service';
@@ -376,6 +377,12 @@ export class DocumentService {
 
     // 本次是否新建了技能(用于解析完成后刷新内存索引)
     let createdNewSkills = false;
+    // 保存成功后带 skillId 的未匹配技能列表，用于生成与落库 ID 一致的图谱布局
+    let savedUnmatchedSkills: Array<{
+      skillId: number;
+      proficiency: string;
+      name: string;
+    }> = [];
 
     // 使用事务包裹核心写入，减少 DB 往返
     await this.dataSource.transaction(async (manager) => {
@@ -547,6 +554,7 @@ export class DocumentService {
           if (unmatchedDocSkills.length > 0)
             await manager.save(DocumentSkill, unmatchedDocSkills);
         }
+        savedUnmatchedSkills = unmatchedWithIds;
       } catch (err) {
         console.error(
           `[Document] Failed to save unmatched skills for ${doc.id}:`,
@@ -570,7 +578,15 @@ export class DocumentService {
     // Fire-and-forget: pre-compute graph layout coordinates
     const allSkillsForGraph = [
       ...mappedSkills,
-      ...((result.data['unmatchedSkills'] as any[]) || []),
+      ...(savedUnmatchedSkills.length > 0
+        ? savedUnmatchedSkills
+        : ((result.data['unmatchedSkills'] as any[]) || []).map(
+            (u: any, i: number) => ({
+              skillId: -(i + 1),
+              proficiency: u?.proficiency || 'intermediate',
+              name: u?.name || `技能 ${i + 1}`,
+            }),
+          )),
     ];
     if (allSkillsForGraph.length > 0) {
       const layout = this.graphLayout.computeLayout(allSkillsForGraph);
@@ -628,19 +644,45 @@ export class DocumentService {
   }
 
   async getDocumentSkills(documentId: string): Promise<DocumentSkill[]> {
-    return this.dsRepo.find({
-      where: { documentId },
-      relations: ['skill'],
-    });
+    const [doc, savedSkills] = await Promise.all([
+      this.docRepo.findOne({ where: { id: documentId } }),
+      this.dsRepo.find({
+        where: { documentId },
+        relations: ['skill'],
+      }),
+    ]);
+    if (!doc) return savedSkills;
+    return mergeUnmatchedSkillsFromParsedJson(doc, savedSkills);
   }
 
   async getDocumentSkillsBatch(
     documentIds: string[],
   ): Promise<DocumentSkill[]> {
     if (documentIds.length === 0) return [];
-    return this.dsRepo.find({
-      where: { documentId: In(documentIds) },
-      relations: ['skill'],
-    });
+    const [docs, savedSkills] = await Promise.all([
+      this.docRepo.find({ where: { id: In(documentIds) } }),
+      this.dsRepo.find({
+        where: { documentId: In(documentIds) },
+        relations: ['skill'],
+      }),
+    ]);
+    const savedByDoc = new Map<string, DocumentSkill[]>();
+    for (const skill of savedSkills) {
+      const list = savedByDoc.get(skill.documentId) || [];
+      list.push(skill);
+      savedByDoc.set(skill.documentId, list);
+    }
+
+    const result: DocumentSkill[] = [];
+    for (const doc of docs) {
+      const saved = savedByDoc.get(doc.id) || [];
+      result.push(...mergeUnmatchedSkillsFromParsedJson(doc, saved));
+    }
+    // 保底返回没有任何 parsedJson 可用的已保存技能
+    const seenDocIds = new Set(docs.map((doc) => doc.id));
+    for (const skill of savedSkills) {
+      if (!seenDocIds.has(skill.documentId)) result.push(skill);
+    }
+    return result;
   }
 }
