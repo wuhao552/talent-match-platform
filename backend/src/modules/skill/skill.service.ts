@@ -26,43 +26,4 @@ export class SkillService {
     if (!skill) throw new NotFoundException('技能不存在');
     return skill;
   }
-
-  async getOrCreate(skillId: number, skillName?: string): Promise<Skill> {
-    const existing = await this.skillRepo.findOne({ where: { id: skillId } });
-    if (existing) {
-      if (skillName && !existing.name) {
-        existing.name = skillName;
-        await this.skillRepo.save(existing);
-      }
-      return existing;
-    }
-
-    const skill = this.skillRepo.create({ id: skillId, name: skillName });
-    return this.skillRepo.save(skill);
-  }
-
-  async getOrCreateBatch(
-    items: Array<{ skillId: number; name: string }>,
-  ): Promise<Skill[]> {
-    if (items.length === 0) return [];
-    const ids = items.map((i) => i.skillId);
-    const existing = await this.skillRepo.findBy(ids.map((id) => ({ id })));
-    const existingMap = new Map(existing.map((s) => [s.id, s]));
-
-    const toCreate: Skill[] = [];
-    for (const item of items) {
-      if (!existingMap.has(item.skillId)) {
-        toCreate.push(
-          this.skillRepo.create({ id: item.skillId, name: item.name }),
-        );
-      }
-    }
-
-    if (toCreate.length > 0) {
-      const created = await this.skillRepo.save(toCreate);
-      for (const s of created) existingMap.set(s.id, s);
-    }
-
-    return items.map((i) => existingMap.get(i.skillId)!);
-  }
 }

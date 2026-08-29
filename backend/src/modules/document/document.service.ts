@@ -24,14 +24,7 @@ import { SkillMatcherService } from '../skill/skill-matcher.service';
 import { MatchingService } from '../matching/matching.service';
 import { JobService } from '../job/job.service';
 import type { AgentResult } from '../../agents/agent.interface';
-
-function decodeFileName(name: string): string {
-  try {
-    return Buffer.from(name, 'latin1').toString('utf8');
-  } catch {
-    return name;
-  }
-}
+import { decodeFileName } from '../../common/file-name.util';
 
 @Injectable()
 export class DocumentService {

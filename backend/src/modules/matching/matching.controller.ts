@@ -8,15 +8,14 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { MatchingService } from './matching.service';
+import { CalculateMatchDto } from './matching.dto';
 import { DocumentService } from '../document/document.service';
-import { Document } from '../document/document.entity';
 import { JwtService } from '@nestjs/jwt';
 import type { Response } from 'express';
+import { verifySseUser, setupSse, sendSse } from '../../common/sse/sse.util';
 
 @Controller('matching')
 export class MatchingController {
@@ -24,13 +23,12 @@ export class MatchingController {
     private matchingService: MatchingService,
     private documentService: DocumentService,
     private jwtService: JwtService,
-    @InjectRepository(Document) private docRepo: Repository<Document>,
   ) {}
 
   @Post('calculate')
   @UseGuards(JwtAuthGuard)
   async calculate(
-    @Body() body: { resumeDocId: string; jobDocId: string },
+    @Body() body: CalculateMatchDto,
     @CurrentUser() user: { id: string; role: string },
   ) {
     // 校验用户至少拥有简历或岗位中的一个文档,防止对任意文档触发 LLM 匹配
@@ -102,34 +100,19 @@ export class MatchingController {
     @Query('token') token: string,
     @Res() res: Response,
   ) {
-    if (!token) {
-      res.status(401).json({ code: 401, message: '缺少 token' });
-      return;
-    }
-    let payload: { sub: string; role?: string };
-    try {
-      payload = this.jwtService.verify<{ sub: string; role?: string }>(token);
-    } catch {
-      res.status(401).json({ code: 401, message: 'token 无效' });
-      return;
-    }
+    const user = verifySseUser(this.jwtService, token, res);
+    if (!user) return;
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-
-    const send = (event: string, data: unknown) =>
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    setupSse(res);
+    const send = (event: string, data: unknown) => sendSse(res, event, data);
 
     try {
       // 校验用户至少拥有简历或岗位中的一个文档
       await this.matchingService.assertPairAccess(
         resumeId,
         jobId,
-        payload.sub,
-        payload.role,
+        user.userId,
+        user.role,
       );
       send('start', { resumeId, jobId });
       const result = await this.matchingService.calculateMatchStream(
@@ -161,30 +144,15 @@ export class MatchingController {
     @Query('token') token: string,
     @Res() res: Response,
   ) {
-    if (!token) {
-      res.status(401).json({ code: 401, message: '缺少 token' });
-      return;
-    }
-    let payload: { sub: string; role?: string };
-    try {
-      payload = this.jwtService.verify<{ sub: string; role?: string }>(token);
-    } catch {
-      res.status(401).json({ code: 401, message: 'token 无效' });
-      return;
-    }
+    const user = verifySseUser(this.jwtService, token, res);
+    if (!user) return;
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-
-    const send = (event: string, data: unknown) =>
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    setupSse(res);
+    const send = (event: string, data: unknown) => sendSse(res, event, data);
 
     try {
       // 校验文档归属,防止对任意文档触发完整 LLM 匹配流水线
-      const doc = await this.documentService.findById(docId, payload.sub);
+      const doc = await this.documentService.findById(docId, user.userId);
       const isResume = doc.docType === 'resume';
 
       // 阶段一：算法分预筛 Top-3

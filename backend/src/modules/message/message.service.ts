@@ -151,40 +151,46 @@ export class MessageService {
       .orderBy('c.lastMessageAt', 'DESC', 'NULLS LAST')
       .getMany();
 
-    // 取每个会话最新一条消息
-    const result = await Promise.all(
-      convs.map(async (c) => {
-        const lastMsg = await this.msgRepo.findOne({
-          where: { conversationId: c.id },
-          order: { createdAt: 'DESC' },
-        });
-        const otherUser = c.userAId === userId ? c.userB : c.userA;
-        const unread = c.userAId === userId ? c.unreadA : c.unreadB;
-        return {
-          id: c.id,
-          otherUser: otherUser
-            ? {
-                id: otherUser.id,
-                username: otherUser.username,
-                role: otherUser.role,
-                companyName: otherUser.companyName,
-              }
-            : null,
-          jobId: c.jobId,
-          unread,
-          lastMessage: lastMsg
-            ? {
-                content: lastMsg.content,
-                createdAt: lastMsg.createdAt,
-                senderId: lastMsg.senderId,
-              }
-            : null,
-          lastMessageAt: c.lastMessageAt,
-          createdAt: c.createdAt,
-        };
-      }),
-    );
-    return result;
+    if (convs.length === 0) return [];
+
+    // 一次查询取回所有会话的最新一条消息，避免 N+1
+    const conversationIds = convs.map((c) => c.id);
+    const lastMessages = await this.msgRepo
+      .createQueryBuilder('m')
+      .where('m.conversationId IN (:...ids)', { ids: conversationIds })
+      .orderBy('m.conversationId', 'ASC')
+      .addOrderBy('m.createdAt', 'DESC')
+      .distinctOn(['m.conversationId'])
+      .getMany();
+    const lastMsgMap = new Map(lastMessages.map((m) => [m.conversationId, m]));
+
+    return convs.map((c) => {
+      const lastMsg = lastMsgMap.get(c.id);
+      const otherUser = c.userAId === userId ? c.userB : c.userA;
+      const unread = c.userAId === userId ? c.unreadA : c.unreadB;
+      return {
+        id: c.id,
+        otherUser: otherUser
+          ? {
+              id: otherUser.id,
+              username: otherUser.username,
+              role: otherUser.role,
+              companyName: otherUser.companyName,
+            }
+          : null,
+        jobId: c.jobId,
+        unread,
+        lastMessage: lastMsg
+          ? {
+              content: lastMsg.content,
+              createdAt: lastMsg.createdAt,
+              senderId: lastMsg.senderId,
+            }
+          : null,
+        lastMessageAt: c.lastMessageAt,
+        createdAt: c.createdAt,
+      };
+    });
   }
 
   /** 获取会话消息(分页),并标记己方已读 */

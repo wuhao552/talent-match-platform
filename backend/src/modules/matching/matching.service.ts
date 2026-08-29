@@ -17,39 +17,14 @@ import { Document } from '../document/document.entity';
 import { DocumentSkill } from '../skill/document-skill.entity';
 import { Skill } from '../skill/skill.entity';
 import { User } from '../user/user.entity';
-import { mergeUnmatchedSkillsFromParsedJson } from '../skill/skill-display.utils';
+import {
+  MatchEnrichmentService,
+  type EnrichedMatch,
+} from './match-enrichment.service';
+export type { EnrichedMatch } from './match-enrichment.service';
+import { MatchScoringService } from './match-scoring.service';
 import { LlmMatchingService } from './llm-matching.service';
 import { EmbeddingService } from '../llm/embedding.service';
-
-// ── Interfaces ──
-
-export interface EnrichedMatch {
-  id: string;
-  overallScore: number;
-  scoreBreakdown: ScoreBreakdown | null;
-  matchDetails: MatchDetail[];
-  algorithmTrace?: AlgorithmStep[] | null;
-  embeddingTrace?: EmbeddingTraceItem[] | null;
-  llmAssessment?: LlmAssessment | null;
-  createdAt: Date;
-  resumeDocId: string;
-  resumeFilename: string;
-  candidateName: string;
-  candidateCity: string;
-  candidateTopSkills: string[];
-  /** 完整简历技能(含未匹配技能)，求职者/企业均可在匹配结果页查看 */
-  resumeSkills: DocumentSkill[];
-  jobDocId: string;
-  jobFilename: string;
-  companyName: string;
-  jobTitle: string;
-  jobCity: string;
-  jobTopSkills: string[];
-  /** 完整岗位技能(含未匹配技能)，求职者无需直接读取企业文档即可用于能力图谱 */
-  jobSkills: DocumentSkill[];
-  /** JD 结构化摘要(薪资/职责/要求/福利等),供匹配双方查看,无需访问对方文档 */
-  jobStructured: Record<string, unknown> | null;
-}
 
 /** Pre-loaded data to avoid per-pair DB queries in recommend() */
 interface MatchPreload {
@@ -71,6 +46,8 @@ export class MatchingService {
     @InjectRepository(Skill) private skillRepo: Repository<Skill>,
     private llmMatching: LlmMatchingService,
     private embeddingService: EmbeddingService,
+    private matchEnrichment: MatchEnrichmentService,
+    private scoring: MatchScoringService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════
@@ -230,7 +207,7 @@ export class MatchingService {
           jobRequirement: jobSkill.proficiency || 'unknown',
           resumeSkillId: skillId,
           jobSkillId: skillId,
-          importance: this.inferImportance(jobSkill.proficiency),
+          importance: this.scoring.inferImportance(jobSkill.proficiency),
           matchMethod: 'exact',
         });
         usedResumeSkillIds.add(skillId);
@@ -288,7 +265,7 @@ export class MatchingService {
           similarity: sim,
         });
         if (
-          sim >= MatchingService.SEMANTIC_MATCH_THRESHOLD &&
+          sim >= MatchScoringService.SEMANTIC_MATCH_THRESHOLD &&
           (!best || sim > best.sim)
         )
           best = { rs, sim };
@@ -316,12 +293,13 @@ export class MatchingService {
                 }
               : null,
           matchedSoFar: embeddingPairs.filter(
-            (p) => p.similarity >= MatchingService.SEMANTIC_MATCH_THRESHOLD,
+            (p) => p.similarity >= MatchScoringService.SEMANTIC_MATCH_THRESHOLD,
           ).length,
           detail: pairsForJob.map((p) => ({
             resume: p.resumeSkill,
             sim: Math.round(p.similarity * 100),
-            matched: p.similarity >= MatchingService.SEMANTIC_MATCH_THRESHOLD,
+            matched:
+              p.similarity >= MatchScoringService.SEMANTIC_MATCH_THRESHOLD,
           })),
         },
       });
@@ -335,7 +313,7 @@ export class MatchingService {
           matchMethod: 'embedding',
           resumeSkillId: best.rs.skillId,
           jobSkillId: jobSkill.skillId,
-          importance: this.inferImportance(jobSkill.proficiency),
+          importance: this.scoring.inferImportance(jobSkill.proficiency),
         });
         usedResumeSkillIds.add(best.rs.skillId);
         usedJobSkillIds.add(jobSkill.skillId);
@@ -348,13 +326,13 @@ export class MatchingService {
       status: 'done',
       summary: `${
         embeddingPairs.filter(
-          (p) => p.similarity >= MatchingService.SEMANTIC_MATCH_THRESHOLD,
+          (p) => p.similarity >= MatchScoringService.SEMANTIC_MATCH_THRESHOLD,
         ).length
       } 项模糊匹配成功`,
       data: {
         embeddingPairs: embeddingPairs
           .filter(
-            (p) => p.similarity >= MatchingService.SEMANTIC_MATCH_THRESHOLD,
+            (p) => p.similarity >= MatchScoringService.SEMANTIC_MATCH_THRESHOLD,
           )
           .map((p) => ({
             job: p.jobSkill,
@@ -387,7 +365,7 @@ export class MatchingService {
     });
 
     // ━━━ Step 3: LLM Deep Assessment (streaming) ━━━
-    const algoResult = this.calculateAlgorithmScore(
+    const algoResult = this.scoring.calculateAlgorithmScore(
       matchDetails,
       resumeSkills,
       jobSkills,
@@ -427,33 +405,16 @@ export class MatchingService {
 
     // ━━━ Step 4: Compose result ━━━
     const algorithmScore = algoResult.score;
-    const llmScore = llmAssessment?.overallFit ?? 0;
-    const overallScore = llmAssessment
-      ? Math.round((algorithmScore * 0.5 + llmScore * 0.5) * 10) / 10
-      : algorithmScore;
-    const skillMatchScore =
-      matchDetails.length > 0
-        ? Math.min(
-            100,
-            (matchDetails.filter((d) => d.skillId > 0).length /
-              Math.max(1, matchDetails.length)) *
-              100,
-          )
-        : 0;
-    const scoreBreakdown: ScoreBreakdown = {
-      algorithmScore,
-      llmScore,
-      overallScore,
-      matchStatus: llmAssessment ? 'computed' : 'fallback',
-      algorithmDimensions: algoResult.dimensions,
-    };
-    trace.push({
-      phase: 'result',
-      label: '最终结果',
-      status: 'done',
-      durationMs: 0,
-      summary: `算法分: ${algorithmScore.toFixed(1)}/100, LLM分: ${llmScore.toFixed(1)}/100, 最终: ${overallScore.toFixed(1)}/100`,
-    });
+    const { overallScore, llmScore, skillMatchScore, scoreBreakdown } =
+      this.scoring.buildFinalResult(
+        algorithmScore,
+        llmAssessment,
+        matchDetails,
+        algoResult.dimensions,
+      );
+    trace.push(
+      this.scoring.buildResultStep(algorithmScore, llmScore, overallScore),
+    );
     const entityData = {
       overallScore,
       skillMatchScore,
@@ -680,7 +641,7 @@ export class MatchingService {
       const person = userMap.get(p.resumeDoc.userId) || null;
       const company = userMap.get(p.jobDoc.userId) || null;
       const matchDetails = await this.runSkillMatching(resumeSkills, jobSkills);
-      const algoResult = this.calculateAlgorithmScore(
+      const algoResult = this.scoring.calculateAlgorithmScore(
         matchDetails,
         resumeSkills,
         jobSkills,
@@ -746,43 +707,26 @@ export class MatchingService {
       const llmResult = llmResults[i];
       const llmAssessment = llmResult?.assessment || null;
 
-      const algoResult = this.calculateAlgorithmScore(
+      const algoResult = this.scoring.calculateAlgorithmScore(
         p.matchDetails,
         p.resumeSkills,
         p.jobSkills,
       );
       const algorithmScore = algoResult.score;
-      const llmScore = llmAssessment?.overallFit ?? 0;
-      const overallScore = llmAssessment
-        ? Math.round((algorithmScore * 0.5 + llmScore * 0.5) * 10) / 10
-        : algorithmScore;
-      const skillMatchScore =
-        p.matchDetails.length > 0
-          ? Math.min(
-              100,
-              (p.matchDetails.filter((d) => d.skillId > 0).length /
-                Math.max(1, p.matchDetails.length)) *
-                100,
-            )
-          : 0;
-      const scoreBreakdown: ScoreBreakdown = {
-        algorithmScore,
-        llmScore,
-        overallScore,
-        matchStatus: llmAssessment ? 'computed' : 'fallback',
-        algorithmDimensions: algoResult.dimensions,
-      };
+      const { overallScore, llmScore, skillMatchScore, scoreBreakdown } =
+        this.scoring.buildFinalResult(
+          algorithmScore,
+          llmAssessment,
+          p.matchDetails,
+          algoResult.dimensions,
+        );
 
       // Build complete trace: data_loading → skill_matching → llm_assessment → result
       const trace: AlgorithmStep[] = [...p.trace];
       if (llmResult) trace.push(llmResult.step);
-      trace.push({
-        phase: 'result',
-        label: '最终结果',
-        status: 'done',
-        durationMs: 0,
-        summary: `算法分: ${algorithmScore.toFixed(1)}/100, LLM分: ${llmScore.toFixed(1)}/100, 最终: ${overallScore.toFixed(1)}/100`,
-      });
+      trace.push(
+        this.scoring.buildResultStep(algorithmScore, llmScore, overallScore),
+      );
 
       const entityData = {
         overallScore,
@@ -878,80 +822,11 @@ export class MatchingService {
 
     // ━━━ Step 2: Identify matching skills ━━━
     const t1 = Date.now();
-    const matchDetails: MatchDetail[] = [];
-
-    const resumeById = new Map<number, DocumentSkill>();
-    for (const ds of resumeSkills) resumeById.set(ds.skillId, ds);
-    const jobById = new Map<number, DocumentSkill>();
-    for (const ds of jobSkills) jobById.set(ds.skillId, ds);
-
-    const usedResumeSkillIds = new Set<number>();
-    const usedJobSkillIds = new Set<number>();
-
-    // 2a: ID-based
-    for (const [skillId, jobSkill] of jobById) {
-      if (resumeById.has(skillId)) {
-        matchDetails.push({
-          skillId,
-          skillName:
-            jobSkill.skillName || jobSkill.skill?.name || `skill-${skillId}`,
-          personProficiency: resumeById.get(skillId)!.proficiency || 'unknown',
-          jobRequirement: jobSkill.proficiency || 'unknown',
-          resumeSkillId: skillId,
-          jobSkillId: skillId,
-          importance: this.inferImportance(jobSkill.proficiency),
-          matchMethod: 'exact',
-        });
-        usedResumeSkillIds.add(skillId);
-        usedJobSkillIds.add(skillId);
-      }
-    }
-
-    // 2b: Fuzzy match
-    const resumeRemaining = resumeSkills.filter(
-      (s) => !usedResumeSkillIds.has(s.skillId),
-    );
-    const jobRemaining = jobSkills.filter(
-      (s) => !usedJobSkillIds.has(s.skillId),
-    );
-    const usedFuzzyResume = new Set<number>();
-
-    for (const jobSkill of jobRemaining) {
-      let best: { rs: DocumentSkill; sim: number } | null = null;
-      for (const rs of resumeRemaining) {
-        if (usedFuzzyResume.has(rs.skillId)) continue;
-        let sim = 0;
-        try {
-          sim = await this.embeddingService.semanticSimilarity(
-            jobSkill.skillName || '',
-            rs.skillName || '',
-          );
-        } catch (err) {
-          console.warn(
-            `[Matching] embedding similarity failed: ${(err as Error).message}`,
-          );
-        }
-        if (
-          sim >= MatchingService.SEMANTIC_MATCH_THRESHOLD &&
-          (!best || sim > best.sim)
-        )
-          best = { rs, sim };
-      }
-      if (best) {
-        usedFuzzyResume.add(best.rs.skillId);
-        matchDetails.push({
-          skillId: -Math.round(best.sim * 100),
-          skillName: `${best.rs.skillName || best.rs.skill?.name} ↔ ${jobSkill.skillName || jobSkill.skill?.name}`,
-          personProficiency: best.rs.proficiency || 'unknown',
-          jobRequirement: jobSkill.proficiency || 'unknown',
-          resumeSkillId: best.rs.skillId,
-          jobSkillId: jobSkill.skillId,
-          importance: this.inferImportance(jobSkill.proficiency),
-        });
-        usedResumeSkillIds.add(best.rs.skillId);
-        usedJobSkillIds.add(jobSkill.skillId);
-      }
-    }
+    const matchDetails = await this.runSkillMatching(resumeSkills, jobSkills);
+    const matchedJobSkillIds = new Set(matchDetails.map((d) => d.jobSkillId));
+    const unmatchedJobSkills = jobSkills
+      .filter((s) => !matchedJobSkillIds.has(s.skillId))
+      .map((s) => s.skillName || s.skill?.name);
 
     trace.push({
       phase: 'skill_matching',
@@ -960,14 +835,12 @@ export class MatchingService {
       durationMs: Date.now() - t1,
       summary: `${matchDetails.length} 项技能匹配 (ID: ${matchDetails.filter((d) => d.skillId > 0).length}, 模糊: ${matchDetails.filter((d) => d.skillId < 0).length})`,
       data: {
-        unmatchedJobSkills: jobRemaining
-          .filter((s) => !usedJobSkillIds.has(s.skillId))
-          .map((s) => s.skillName || s.skill?.name),
+        unmatchedJobSkills,
       },
     });
 
     // ━━━ Step 3: LLM Deep Assessment ━━━
-    const algoResult = this.calculateAlgorithmScore(
+    const algoResult = this.scoring.calculateAlgorithmScore(
       matchDetails,
       resumeSkills,
       jobSkills,
@@ -1007,34 +880,17 @@ export class MatchingService {
 
     // ━━━ Step 4: Compose result ━━━
     const algorithmScore = algoResult.score;
-    const llmScore = llmAssessment?.overallFit ?? 0;
-    const overallScore = llmAssessment
-      ? Math.round((algorithmScore * 0.5 + llmScore * 0.5) * 10) / 10
-      : algorithmScore;
-    const skillMatchScore =
-      matchDetails.length > 0
-        ? Math.min(
-            100,
-            (matchDetails.filter((d) => d.skillId > 0).length /
-              Math.max(1, matchDetails.length)) *
-              100,
-          )
-        : 0;
-    const scoreBreakdown: ScoreBreakdown = {
-      algorithmScore,
-      llmScore,
-      overallScore,
-      matchStatus: llmAssessment ? 'computed' : 'fallback',
-      algorithmDimensions: algoResult.dimensions,
-    };
+    const { overallScore, llmScore, skillMatchScore, scoreBreakdown } =
+      this.scoring.buildFinalResult(
+        algorithmScore,
+        llmAssessment,
+        matchDetails,
+        algoResult.dimensions,
+      );
 
-    trace.push({
-      phase: 'result',
-      label: '最终结果',
-      status: 'done',
-      durationMs: 0,
-      summary: `算法分: ${algorithmScore.toFixed(1)}/100, LLM分: ${llmScore.toFixed(1)}/100, 最终: ${overallScore.toFixed(1)}/100`,
-    });
+    trace.push(
+      this.scoring.buildResultStep(algorithmScore, llmScore, overallScore),
+    );
 
     console.log(
       `[Matching] resume=${resumeDocId.slice(0, 8)} job=${jobDocId.slice(0, 8)} | skills=${matchDetails.length} | score=${overallScore.toFixed(1)} | confidence=${llmAssessment?.confidence?.toFixed(2) || 'N/A'}`,
@@ -1133,7 +989,7 @@ export class MatchingService {
       }
     }
 
-    return this.enrichResults(
+    return this.matchEnrichment.enrichResults(
       results.sort((a, b) => b.overallScore - a.overallScore),
     );
   }
@@ -1218,7 +1074,7 @@ export class MatchingService {
           jobSkills,
           onEmbeddingProgress,
         );
-        const result = this.calculateAlgorithmScore(
+        const result = this.scoring.calculateAlgorithmScore(
           matchDetails,
           resumeSkills,
           jobSkills,
@@ -1285,7 +1141,7 @@ export class MatchingService {
       .orderBy('mr.createdAt', 'DESC')
       .getMany();
     const seen = new Set<string>();
-    return this.enrichResults(
+    return this.matchEnrichment.enrichResults(
       results.filter((r) => {
         const k = `${r.resumeDocId}-${r.jobDocId}`;
         if (seen.has(k)) return false;
@@ -1296,14 +1152,14 @@ export class MatchingService {
   }
 
   async getResult(id: string): Promise<EnrichedMatch> {
-    const [enriched] = await this.enrichResults([
+    const [enriched] = await this.matchEnrichment.enrichResults([
       await this.matchRepo.findOneOrFail({ where: { id } }),
     ]);
     return enriched;
   }
 
   async getMatchesByJob(jobDocId: string): Promise<EnrichedMatch[]> {
-    return this.enrichResults(
+    return this.matchEnrichment.enrichResults(
       (
         await this.matchRepo.find({ where: { jobDocId, staleAt: IsNull() } })
       ).sort((a, b) => b.overallScore - a.overallScore),
@@ -1311,7 +1167,7 @@ export class MatchingService {
   }
 
   async getMatchesByResume(resumeDocId: string): Promise<EnrichedMatch[]> {
-    return this.enrichResults(
+    return this.matchEnrichment.enrichResults(
       (
         await this.matchRepo.find({ where: { resumeDocId, staleAt: IsNull() } })
       ).sort((a, b) => b.overallScore - a.overallScore),
@@ -1373,220 +1229,6 @@ export class MatchingService {
         );
       }
     }
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  //  Enrichment
-  // ══════════════════════════════════════════════════════════════
-
-  private static getStringField(
-    obj: unknown,
-    ...keys: string[]
-  ): string | undefined {
-    let current: unknown = obj;
-    for (const key of keys) {
-      if (current && typeof current === 'object' && key in current) {
-        current = (current as Record<string, unknown>)[key];
-      } else {
-        return undefined;
-      }
-    }
-    return typeof current === 'string' ? current : undefined;
-  }
-
-  private async enrichResults(
-    results: MatchResult[],
-  ): Promise<EnrichedMatch[]> {
-    if (results.length === 0) return [];
-    const allDocIds = [
-      ...new Set(results.flatMap((r) => [r.resumeDocId, r.jobDocId])),
-    ];
-    const [docs, allSkills] = await Promise.all([
-      this.docRepo.findByIds(allDocIds),
-      this.dsRepo.find({
-        where: { documentId: In(allDocIds) },
-        relations: ['skill'],
-      }),
-    ]);
-    const docMap = new Map(docs.map((d) => [d.id, d]));
-    const userIds = [...new Set(docs.map((d) => d.userId).filter(Boolean))];
-    const users =
-      userIds.length > 0 ? await this.userRepo.findByIds(userIds) : [];
-    const userMap = new Map(users.map((u) => [u.id, u]));
-    const savedSkillsByDoc = new Map<string, DocumentSkill[]>();
-    for (const s of allSkills) {
-      const a = savedSkillsByDoc.get(s.documentId) || [];
-      a.push(s);
-      savedSkillsByDoc.set(s.documentId, a);
-    }
-
-    // 补全历史文档中未落库的未匹配技能，能力图谱需要展示完整岗位/简历技能。
-    const skillsByDoc = new Map<string, DocumentSkill[]>();
-    for (const doc of docs) {
-      const saved = savedSkillsByDoc.get(doc.id) || [];
-      skillsByDoc.set(doc.id, mergeUnmatchedSkillsFromParsedJson(doc, saved));
-    }
-
-    return results.flatMap((r) => {
-      const resumeDoc = docMap.get(r.resumeDocId);
-      const jobDoc = docMap.get(r.jobDocId);
-      if (!resumeDoc || !jobDoc) return [];
-      const candidate = userMap.get(resumeDoc.userId);
-      const company = userMap.get(jobDoc.userId);
-      return [
-        {
-          id: r.id,
-          overallScore: r.overallScore,
-          scoreBreakdown: r.scoreBreakdown || null,
-          matchDetails: r.matchDetails,
-          algorithmTrace: r.algorithmTrace,
-          embeddingTrace: r.embeddingTrace,
-          llmAssessment: r.llmAssessment,
-          createdAt: r.createdAt,
-          resumeDocId: r.resumeDocId,
-          resumeFilename: resumeDoc.originalFilename,
-          candidateName:
-            MatchingService.getStringField(
-              resumeDoc.parsedJson,
-              'structured',
-              'name',
-            ) ||
-            candidate?.username ||
-            '未知',
-          candidateCity:
-            candidate?.city ||
-            MatchingService.getStringField(
-              resumeDoc.parsedJson,
-              'structured',
-              'city',
-            ) ||
-            '',
-          candidateTopSkills: (skillsByDoc.get(r.resumeDocId) || [])
-            .slice(0, 6)
-            .map((s) => s.skillName || s.skill?.name || '')
-            .filter(Boolean),
-          resumeSkills: skillsByDoc.get(r.resumeDocId) || [],
-          jobDocId: r.jobDocId,
-          jobFilename: jobDoc.originalFilename,
-          companyName:
-            company?.companyName ||
-            MatchingService.getStringField(
-              jobDoc.parsedJson,
-              'structured',
-              'companyName',
-            ) ||
-            MatchingService.getStringField(
-              jobDoc.parsedJson,
-              'structured',
-              'company',
-            ) ||
-            '',
-          jobTitle:
-            MatchingService.getStringField(
-              jobDoc.parsedJson,
-              'structured',
-              'jobTitle',
-            ) ||
-            MatchingService.getStringField(
-              jobDoc.parsedJson,
-              'structured',
-              'title',
-            ) ||
-            jobDoc.originalFilename,
-          jobCity:
-            company?.city ||
-            MatchingService.getStringField(
-              jobDoc.parsedJson,
-              'structured',
-              'location',
-            ) ||
-            MatchingService.getStringField(
-              jobDoc.parsedJson,
-              'structured',
-              'city',
-            ) ||
-            '',
-          jobTopSkills: (skillsByDoc.get(r.jobDocId) || [])
-            .slice(0, 6)
-            .map((s) => s.skillName || s.skill?.name || '')
-            .filter(Boolean),
-          jobSkills: skillsByDoc.get(r.jobDocId) || [],
-          // JD 结构化内容随匹配结果一起返回:求职者无权直接读取企业文档,
-          // 但应能看到该岗位的完整信息(薪资/职责/要求/福利等)
-          jobStructured:
-            (jobDoc.parsedJson as { structured?: Record<string, unknown> } | null)
-              ?.structured || null,
-        },
-      ];
-    });
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  //  Algorithm Scoring
-  // ══════════════════════════════════════════════════════════════
-
-  private static readonly PROFICIENCY_LEVEL: Record<string, number> = {
-    beginner: 1,
-    intermediate: 2,
-    advanced: 3,
-    expert: 4,
-  };
-
-  private static readonly SEMANTIC_MATCH_THRESHOLD = 0.6;
-
-  /**
-   * 计算算法技能匹配分（双维度）。
-   *
-   * coverage(60%): 技能覆盖率 — 岗位技能被匹配的比例
-   * adequacy(40%): 熟练度达标率 — 匹配项的熟练度是否达标
-   */
-  calculateAlgorithmScore(
-    matchDetails: MatchDetail[],
-    resumeSkills: DocumentSkill[],
-    jobSkills: DocumentSkill[],
-  ): {
-    score: number;
-    dimensions: {
-      coverage: number;
-      adequacy: number;
-    };
-  } {
-    // ── 维度一：技能覆盖率 (60%) ──
-    // 每个岗位技能等权，精确匹配计1.0，模糊匹配计相似度
-    let coverageSum = 0;
-    for (const js of jobSkills) {
-      const detail = matchDetails.find((d) => d.jobSkillId === js.skillId);
-      if (detail) {
-        coverageSum +=
-          detail.skillId > 0 ? 1.0 : Math.abs(detail.skillId) / 100;
-      }
-    }
-    const coverage = jobSkills.length > 0 ? coverageSum / jobSkills.length : 0;
-
-    // ── 维度二：熟练度达标率 (40%) ──
-    // 对每对匹配，计算候选人级别/岗位要求级别，上限1.0
-    // unknown 默认 intermediate(2)，避免该维度失效
-    let adequacySum = 0;
-    let adequacyCount = 0;
-    for (const d of matchDetails) {
-      const candLevel =
-        MatchingService.PROFICIENCY_LEVEL[d.personProficiency] ?? 2;
-      const reqLevel = MatchingService.PROFICIENCY_LEVEL[d.jobRequirement] ?? 2;
-      adequacySum += Math.min(1.0, candLevel / reqLevel);
-      adequacyCount++;
-    }
-    const adequacy = adequacyCount > 0 ? adequacySum / adequacyCount : coverage;
-
-    // ── 加权求和 ──
-    const score = (coverage * 0.6 + adequacy * 0.4) * 100;
-
-    return {
-      score: Math.round(score * 10) / 10,
-      dimensions: {
-        coverage: Math.round(coverage * 100) / 100,
-        adequacy: Math.round(adequacy * 100) / 100,
-      },
-    };
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -1667,11 +1309,25 @@ export class MatchingService {
     }
   }
 
-  private inferImportance(proficiency: string): string {
-    const idx = ['beginner', 'intermediate', 'advanced', 'expert'].indexOf(
-      proficiency,
+  /**
+   * 保留兼容入口：算法评分已拆分到 MatchScoringService。
+   */
+  calculateAlgorithmScore(
+    matchDetails: MatchDetail[],
+    resumeSkills: DocumentSkill[],
+    jobSkills: DocumentSkill[],
+  ): {
+    score: number;
+    dimensions: {
+      coverage: number;
+      adequacy: number;
+    };
+  } {
+    return this.scoring.calculateAlgorithmScore(
+      matchDetails,
+      resumeSkills,
+      jobSkills,
     );
-    return idx >= 2 ? 'required' : idx >= 1 ? 'preferred' : 'optional';
   }
 
   /**
@@ -1708,24 +1364,11 @@ export class MatchingService {
           jobRequirement: jobSkill.proficiency || 'unknown',
           resumeSkillId: skillId,
           jobSkillId: skillId,
-          importance: this.inferImportance(jobSkill.proficiency),
+          importance: this.scoring.inferImportance(jobSkill.proficiency),
           matchMethod: 'exact',
         });
         usedResumeSkillIds.add(skillId);
         usedJobSkillIds.add(skillId);
-      }
-    }
-
-    // 预热 embedding 缓存：批量获取所有技能名的向量，后续语义匹配可直接命中缓存
-    const allSkillNames = new Set<string>();
-    for (const s of [...resumeSkills, ...jobSkills]) {
-      if (s.skillName) allSkillNames.add(s.skillName);
-    }
-    if (allSkillNames.size > 0) {
-      try {
-        await this.embeddingService.getEmbeddingBatch([...allSkillNames]);
-      } catch {
-        // embedding 预热失败不影响后续流程
       }
     }
 
@@ -1736,6 +1379,20 @@ export class MatchingService {
     const jobRemaining = jobSkills.filter(
       (s) => !usedJobSkillIds.has(s.skillId),
     );
+
+    // 预热 embedding 缓存：只需为待模糊匹配的技能批量获取向量
+    const allFuzzySkillNames = new Set<string>();
+    for (const s of [...resumeRemaining, ...jobRemaining]) {
+      if (s.skillName) allFuzzySkillNames.add(s.skillName);
+    }
+    if (allFuzzySkillNames.size > 0) {
+      try {
+        await this.embeddingService.getEmbeddingBatch([...allFuzzySkillNames]);
+      } catch {
+        // embedding 预热失败不影响后续流程
+      }
+    }
+
     const usedFuzzyResume = new Set<number>();
 
     for (const jobSkill of jobRemaining) {
@@ -1754,7 +1411,7 @@ export class MatchingService {
           );
         }
         if (
-          sim >= MatchingService.SEMANTIC_MATCH_THRESHOLD &&
+          sim >= MatchScoringService.SEMANTIC_MATCH_THRESHOLD &&
           (!best || sim > best.sim)
         )
           best = { rs, sim };
@@ -1782,7 +1439,7 @@ export class MatchingService {
           matchMethod: 'embedding',
           resumeSkillId: best.rs.skillId,
           jobSkillId: jobSkill.skillId,
-          importance: this.inferImportance(jobSkill.proficiency),
+          importance: this.scoring.inferImportance(jobSkill.proficiency),
         });
         usedResumeSkillIds.add(best.rs.skillId);
         usedJobSkillIds.add(jobSkill.skillId);

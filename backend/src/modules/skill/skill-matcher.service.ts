@@ -212,14 +212,4 @@ export class SkillMatcherService implements OnModuleInit {
       },
     };
   }
-
-  getById(id: number): string | undefined {
-    const s = this.skills.find((s) => s.id === id);
-    return s?.name;
-  }
-
-  /** Return all canonical skills with id, name, and category for LLM context. */
-  getAllSkills(): { id: number; name: string; category?: string }[] {
-    return this.skills.map((s) => ({ id: s.id, name: s.name }));
-  }
 }

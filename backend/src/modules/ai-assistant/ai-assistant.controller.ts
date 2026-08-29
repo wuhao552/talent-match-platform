@@ -12,6 +12,8 @@ import type { Response } from 'express';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AiAssistantService } from './ai-assistant.service';
+import { ChatStreamDto } from './ai-assistant.dto';
+import { verifySseUser, setupSse, sendSse } from '../../common/sse/sse.util';
 
 @Controller('ai-assistant')
 export class AiAssistantController {
@@ -19,45 +21,6 @@ export class AiAssistantController {
     private aiService: AiAssistantService,
     private jwtService: JwtService,
   ) {}
-
-  /** 验证 query token，返回 userId；失败时回复 401 并返回 false */
-  private verifyTokenFromQuery(
-    token: string | undefined,
-    res: Response,
-  ): string | null {
-    if (!token) {
-      res.status(401).json({ code: 401, message: '缺少 token' });
-      return null;
-    }
-    try {
-      const payload = this.jwtService.verify<{ sub?: string; id?: string }>(
-        token,
-      );
-      const userId = payload.sub || payload.id;
-      if (!userId) {
-        res.status(401).json({ code: 401, message: 'token 无效' });
-        return null;
-      }
-      return userId;
-    } catch {
-      res.status(401).json({ code: 401, message: 'token 无效' });
-      return null;
-    }
-  }
-
-  /** SSE 写入辅助：用 `event:` + `data:` 行格式 */
-  private sseWrite(res: Response, event: string, data: unknown) {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  }
-
-  /** 统一设置 SSE 响应头 */
-  private setupSse(res: Response) {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-  }
 
   // ── 数据加载端点（普通 REST，JwtAuthGuard 保护） ──
 
@@ -85,17 +48,19 @@ export class AiAssistantController {
     @Query('token') token: string,
     @Res() res: Response,
   ) {
-    const userId = this.verifyTokenFromQuery(token, res);
-    if (!userId) return;
+    const user = verifySseUser(this.jwtService, token, res);
+    if (!user) return;
 
-    this.setupSse(res);
-    const send = (event: string, data: unknown) =>
-      this.sseWrite(res, event, data);
+    setupSse(res);
+    const send = (event: string, data: unknown) => sendSse(res, event, data);
 
     try {
       if (!matchId) throw new Error('缺少 matchId 参数');
 
-      const ctx = await this.aiService.loadInterviewContext(matchId, userId);
+      const ctx = await this.aiService.loadInterviewContext(
+        matchId,
+        user.userId,
+      );
       send('start', {
         matchId,
         resumeFilename: ctx.resumeDoc?.originalFilename,
@@ -133,15 +98,14 @@ export class AiAssistantController {
   // ── SSE 端点 2：候选人 AI 教练（EventSource 友好） ──
   @Get('coach/stream')
   async streamCoach(@Query('token') token: string, @Res() res: Response) {
-    const userId = this.verifyTokenFromQuery(token, res);
-    if (!userId) return;
+    const user = verifySseUser(this.jwtService, token, res);
+    if (!user) return;
 
-    this.setupSse(res);
-    const send = (event: string, data: unknown) =>
-      this.sseWrite(res, event, data);
+    setupSse(res);
+    const send = (event: string, data: unknown) => sendSse(res, event, data);
 
     try {
-      const ctx = await this.aiService.loadCoachContext(userId);
+      const ctx = await this.aiService.loadCoachContext(user.userId);
       send('start', {
         skillCount: ctx.userSkills.length,
         matchCount: ctx.recentMatches.length,
@@ -189,29 +153,14 @@ export class AiAssistantController {
   @UseGuards(JwtAuthGuard)
   async streamChat(
     @Body()
-    body: {
-      contextType: 'resume' | 'job_description' | 'match';
-      contextId: string;
-      messages: Array<{ role: 'user' | 'assistant'; content: string }>;
-    },
+    body: ChatStreamDto,
     @CurrentUser() user: { id: string },
     @Res() res: Response,
   ) {
-    this.setupSse(res);
-    const send = (event: string, data: unknown) =>
-      this.sseWrite(res, event, data);
+    setupSse(res);
+    const send = (event: string, data: unknown) => sendSse(res, event, data);
 
     try {
-      if (
-        !body ||
-        !body.contextType ||
-        !body.contextId ||
-        !Array.isArray(body.messages) ||
-        body.messages.length === 0
-      ) {
-        throw new Error('请求参数不完整');
-      }
-
       const ctx = await this.aiService.loadChatContext(
         user.id,
         body.contextType,

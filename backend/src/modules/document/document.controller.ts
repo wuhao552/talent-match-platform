@@ -7,7 +7,6 @@ import {
   Body,
   Res,
   Query,
-  UnauthorizedException,
   UseGuards,
   UseInterceptors,
   UploadedFile,
@@ -16,7 +15,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
+import multer from 'multer';
 import { extname } from 'path';
 import { JwtService } from '@nestjs/jwt';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -24,14 +23,36 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DocumentService } from './document.service';
 import type { PipelineStep } from '../../agents/orchestrator.agent';
 import { v4 as uuid } from 'uuid';
+import { decodeFileName } from '../../common/file-name.util';
+import { verifySseUser, setupSse, sendSse } from '../../common/sse/sse.util';
 
-function decodeFileName(name: string): string {
-  try {
-    return Buffer.from(name, 'latin1').toString('utf8');
-  } catch {
-    return name;
-  }
-}
+const multerOptions: multer.Options = {
+  storage: multer.diskStorage({
+    destination: './uploads',
+    filename: (
+      _req: any,
+      file: Express.Multer.File,
+      cb: (error: Error | null, filename: string) => void,
+    ) => {
+      const name = `${uuid()}${extname(decodeFileName(file.originalname))}`;
+      cb(null, name);
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (
+    _req: any,
+    file: Express.Multer.File,
+    cb: (error: Error | null, acceptFile: boolean) => void,
+  ) => {
+    const allowed = ['.pdf', '.doc', '.docx'];
+    const ext = extname(decodeFileName(file.originalname)).toLowerCase();
+    if (allowed.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('仅支持 PDF、DOC、DOCX 格式'), false);
+    }
+  },
+};
 
 @Controller('documents')
 export class DocumentController {
@@ -42,27 +63,7 @@ export class DocumentController {
 
   @Post('upload')
   @UseGuards(JwtAuthGuard)
-  @UseInterceptors(
-    FileInterceptor('file', {
-      storage: diskStorage({
-        destination: './uploads',
-        filename: (_req, file, cb) => {
-          const name = `${uuid()}${extname(decodeFileName(file.originalname))}`;
-          cb(null, name);
-        },
-      }),
-      limits: { fileSize: 10 * 1024 * 1024 },
-      fileFilter: (_req, file, cb) => {
-        const allowed = ['.pdf', '.doc', '.docx'];
-        const ext = extname(decodeFileName(file.originalname)).toLowerCase();
-        if (allowed.includes(ext)) {
-          cb(null, true);
-        } else {
-          cb(new Error('仅支持 PDF、DOC、DOCX 格式'), false);
-        }
-      },
-    }),
-  )
+  @UseInterceptors(FileInterceptor('file', multerOptions))
   async upload(
     @UploadedFile() file: Express.Multer.File,
     @Body('docType') docType: string,
@@ -79,27 +80,7 @@ export class DocumentController {
 
   @Post('upload-batch')
   @UseGuards(JwtAuthGuard)
-  @UseInterceptors(
-    FilesInterceptor('files', 50, {
-      storage: diskStorage({
-        destination: './uploads',
-        filename: (_req, file, cb) => {
-          const name = `${uuid()}${extname(decodeFileName(file.originalname))}`;
-          cb(null, name);
-        },
-      }),
-      limits: { fileSize: 10 * 1024 * 1024 },
-      fileFilter: (_req, file, cb) => {
-        const allowed = ['.pdf', '.doc', '.docx'];
-        const ext = extname(decodeFileName(file.originalname)).toLowerCase();
-        if (allowed.includes(ext)) {
-          cb(null, true);
-        } else {
-          cb(new Error('仅支持 PDF、DOC、DOCX 格式'), false);
-        }
-      },
-    }),
-  )
+  @UseInterceptors(FilesInterceptor('files', 50, multerOptions))
   async uploadBatch(
     @UploadedFiles() files: Express.Multer.File[],
     @Body('docType') docType: string,
@@ -194,30 +175,11 @@ export class DocumentController {
     @Res() res: Response,
   ) {
     // Verify JWT manually (EventSource doesn't support custom headers)
-    if (!token) {
-      res.status(401).json({ code: 401, message: '缺少 token 参数' });
-      return;
-    }
-    let userId: string;
-    try {
-      const payload = this.jwtService.verify(token);
-      userId = payload.sub;
-    } catch (err) {
-      res
-        .status(401)
-        .json({ code: 401, message: 'token 无效: ' + (err as Error).message });
-      return;
-    }
+    const sseUser = verifySseUser(this.jwtService, token, res);
+    if (!sseUser) return;
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-
-    const send = (event: string, data: unknown) => {
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    };
+    setupSse(res);
+    const send = (event: string, data: unknown) => sendSse(res, event, data);
 
     const onProgress = (step: PipelineStep) => {
       send('progress', step);
@@ -228,8 +190,12 @@ export class DocumentController {
     };
 
     try {
-      const doc = await this.documentService.findById(id, userId);
-      send('start', { documentId: id, filename: doc.originalFilename, userId });
+      const doc = await this.documentService.findById(id, sseUser.userId);
+      send('start', {
+        documentId: id,
+        filename: doc.originalFilename,
+        userId: sseUser.userId,
+      });
 
       // Skip re-parsing if already parsed (e.g. background parseDocument finished first)
       // unless force=true is requested (e.g. to re-extract skills)

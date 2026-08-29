@@ -69,8 +69,6 @@ export class GraphLayoutService {
       },
     ];
 
-    const skillIdSet = new Set(skills.map((s) => s.skillId));
-
     for (const s of skills) {
       nodes.push({
         id: `s-${s.skillId}`,

@@ -8,7 +8,7 @@
 |------|------|
 | 框架 | NestJS 11 (Node.js) |
 | 语言 | TypeScript |
-| 数据库 | 人大金仓 KingbaseES V9（PostgreSQL 兼容模式，TypeORM） |
+| 数据库 | PostgreSQL |
 | LLM | DeepSeek API (文档解析 / 技能提取 / 语义匹配) |
 | 语义匹配 | Embedding 向量相似度 |
 | 认证 | JWT + Passport |
@@ -31,7 +31,7 @@ LLM_API_KEY=your_deepseek_api_key
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-v4-pro
 
-# 人大金仓 KingbaseES 配置（PostgreSQL 兼容模式，使用 postgres 驱动）
+# PostgreSQL 配置（人大金仓 KingbaseES 兼容模式也可使用 postgres 驱动）
 DB_HOST=localhost
 DB_PORT=54321
 DB_USERNAME=system
@@ -73,7 +73,10 @@ backend/
 │   │   └── agent.module.ts     # Agent 模块装配
 │   ├── common/
 │   │   ├── decorators/         # 自定义装饰器（@CurrentUser, @Roles）
-│   │   └── guards/             # 守卫（JwtAuthGuard, RolesGuard）
+│   │   ├── guards/             # 守卫（JwtAuthGuard, RolesGuard）
+│   │   ├── jwt-config.module.ts # 统一 JWT 配置
+│   │   ├── file-name.util.ts   # 文件名解码工具
+│   │   └── sse/sse.util.ts     # SSE 公共工具
 │   ├── config/
 │   │   ├── database.config.ts  # 数据库配置
 │   │   └── llm.config.ts       # LLM 配置
@@ -92,11 +95,16 @@ backend/
 │   │   │   └── skill.utils.ts
 │   │   ├── graph/              # 图谱布局模块（d3-force 预计算）
 │   │   ├── matching/           # 匹配模块（算法评分/LLM 评估/推荐）
-│   │   │   ├── matching.service.ts      # 算法评分
-│   │   │   ├── llm-matching.service.ts  # LLM 深度评估
+│   │   │   ├── matching.service.ts       # 匹配主流程
+│   │   │   ├── match-scoring.service.ts  # 算法评分/综合分
+│   │   │   ├── match-enrichment.service.ts # 匹配结果富化
+│   │   │   ├── llm-matching.service.ts   # LLM 深度评估
+│   │   │   ├── matching.controller.ts    # 匹配接口/SSE
+│   │   │   ├── matching.dto.ts           # 匹配请求 DTO
 │   │   │   └── match-result.entity.ts
 │   │   ├── llm/                # LLM 模块（DeepSeek API + Embedding 封装）
 │   │   │   ├── llm.service.ts
+│   │   │   ├── llm.prompts.ts           # 集中管理提示词
 │   │   │   ├── embedding.service.ts     # 语义相似度计算
 │   │   │   └── llm-log.entity.ts        # LLM 调用日志实体
 │   │   ├── admin/              # 管理模块（后台 API + 审计日志）
@@ -104,6 +112,7 @@ backend/
 │   │   │   └── admin.dto.ts
 │   │   ├── ai-assistant/       # AI 智能助手（面试题生成 / 智能问答 / 职业教练）
 │   │   │   ├── ai-assistant.controller.ts   # SSE + POST 流式端点
+│   │   │   ├── ai-assistant.dto.ts          # 聊天请求 DTO
 │   │   │   └── ai-assistant.service.ts      # 上下文加载 + LLM 调用封装
 │   │   ├── job/                # 岗位模块（发布/上下架/同步 JD 文档）
 │   │   │   ├── job.entity.ts
@@ -135,23 +144,22 @@ backend/
 AppModule
 ├── AuthModule          JWT 认证 / 角色管理
 ├── DocumentModule      文件上传 / 解析管道
-│   └── 依赖 AgentModule
+│   └── 依赖 AgentModule, GraphModule, MatchingModule（forwardRef）, JobModule, SkillModule, JwtConfigModule
 ├── SkillModule         技能 CRUD / 种子数据 / 标准技能匹配
-│   └── 依赖 GraphModule（forwardRef）, LlmModule
 ├── GraphModule         图谱布局服务（d3-force 预计算）
 ├── MatchingModule      匹配算法 / 推荐引擎 / LLM 评估 / 评分
-│   └── 依赖 SkillModule, LlmModule, DocumentModule（forwardRef）
+│   └── 依赖 LlmModule, DocumentModule（forwardRef）, JwtConfigModule
 ├── LlmModule           DeepSeek API + Embedding 封装
 ├── AgentModule         文档解析 Agent 编排
-│   └── 依赖 LlmModule, GraphModule, SkillModule
+│   └── 依赖 LlmModule, SkillModule
 ├── AdminModule         后台管理 API + 审计日志
 ├── AiAssistantModule   AI 智能助手（面试题 / 智能问答 / 职业教练，SSE 流式）
-│   └── 依赖 LlmModule, MatchingModule, DocumentModule, SkillModule, UserModule
+│   └── 依赖 LlmModule, JwtConfigModule
 ├── JobModule           岗位发布/上下架/从 JD 文档同步
 ├── ApplicationModule   投递状态机 + 历史记录
 ├── NotificationModule  通知（点对点 + 全员广播）
 ├── MessageModule       站内消息（会话/未读计数/已读）
-└── DashboardModule     仪表盘 API
+└── DashboardModule     仪表盘 API（复用 MatchingService）
 ```
 
 ## 核心流程
@@ -163,7 +171,7 @@ AppModule
 1. **文本提取** — 读取 PDF（pdf-parse）、DOCX（mammoth）或纯文本
 2. **DocumentParserAgent** — 调用 LLM 解析结构化字段（姓名、邮箱、电话、教育、经历）
 3. **SkillExtractorAgent** — 调用 LLM 提取 `{name, proficiency}` 技能列表（使用 flash 模型）
-4. **SkillMatcherService** — 将提取的技能名称映射到 KingbaseES 中的规范技能 ID
+4. **SkillMatcherService** — 将提取的技能名称映射到 PostgreSQL 标准技能库中的规范技能 ID
 
 步骤 2 和 3 并行执行。流水线通过 SSE 暴露：`GET /api/documents/:id/parse-stream?token=<jwt>`
 
@@ -174,7 +182,7 @@ AppModule
 #### 第一步：技能匹配识别
 
 1. **ID 精确匹配** — 简历与岗位拥有相同技能 ID 时直接匹配
-2. **语义模糊匹配** — 对未匹配的技能，通过 Embedding 向量计算语义相似度（阈值 ≥ 0.5）
+2. **语义模糊匹配** — 对未匹配的技能，通过 Embedding 向量计算语义相似度（阈值 ≥ 0.6）
 
 #### 第二步：算法评分（满分 100）
 

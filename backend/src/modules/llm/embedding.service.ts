@@ -66,25 +66,6 @@ export class EmbeddingService {
     return this.cosineSim(va, vb);
   }
 
-  /**
-   * 批量计算一个查询文本与多个候选文本的语义相似度。
-   */
-  async batchSemanticSimilarity(
-    query: string,
-    candidates: string[],
-  ): Promise<Map<string, number>> {
-    const allTexts = [query, ...candidates];
-    const embeddings = await this.getEmbeddingBatch(allTexts);
-    const queryVec = embeddings.get(query)!;
-
-    const result = new Map<string, number>();
-    for (const c of candidates) {
-      const cv = embeddings.get(c);
-      result.set(c, cv ? this.cosineSim(queryVec, cv) : 0);
-    }
-    return result;
-  }
-
   // ── 内部方法 ──
 
   /**
