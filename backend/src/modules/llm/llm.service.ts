@@ -28,6 +28,7 @@ export interface LlmCallDetail {
   success: boolean;
   errorMessage?: string;
   tokensUsed?: number;
+  fallbackUsed?: boolean;
   latencyMs: number;
 }
 
@@ -42,6 +43,31 @@ export class LlmService {
   private readonly flashModel = 'deepseek-v4-flash';
   private readonly proModel = process.env.LLM_MODEL || 'deepseek-v4-flash';
 
+  // 备用模型：当 DeepSeek 主模型不可用时自动切换
+  private get fallbackModel(): string {
+    return (
+      process.env.LLM_FALLBACK_MODEL ||
+      process.env.LLM_BACKUP_MODEL ||
+      ''
+    );
+  }
+
+  private get fallbackApiKey(): string {
+    return (
+      process.env.LLM_FALLBACK_API_KEY ||
+      process.env.LLM_BACKUP_API_KEY ||
+      ''
+    );
+  }
+
+  private get fallbackBaseUrl(): string {
+    return (
+      process.env.LLM_FALLBACK_BASE_URL ||
+      process.env.LLM_BACKUP_BASE_URL ||
+      'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    );
+  }
+
   /**
    * 统一调用入口：支持流式回调。
    */
@@ -51,11 +77,19 @@ export class LlmService {
     userMessage: string,
     model: string,
     onChunk?: (token: string) => void,
+    onModelUsed?: (model: string, fallbackUsed: boolean) => void,
   ): Promise<string> {
     const startTime = Date.now();
     let rawResponse: string;
     let success = true;
     let errorMessage: string | undefined;
+    let actualModel = model;
+    let fallbackUsed = false;
+    const notifyModelUsed = (usedModel: string, usedFallback: boolean) => {
+      actualModel = usedModel;
+      fallbackUsed = usedFallback;
+      onModelUsed?.(usedModel, usedFallback);
+    };
 
     try {
       if (onChunk) {
@@ -64,24 +98,31 @@ export class LlmService {
           systemPrompt,
           userMessage,
           model,
+          notifyModelUsed,
         )) {
           if (!chunk.done) onChunk(chunk.token);
           rawResponse = chunk.fullText;
         }
       } else {
-        rawResponse = await this.callLLM(systemPrompt, userMessage, model);
+        rawResponse = await this.callLLM(
+          systemPrompt,
+          userMessage,
+          model,
+          notifyModelUsed,
+        );
       }
     } catch (err) {
       success = false;
       errorMessage = err instanceof Error ? err.message : 'LLM 调用失败';
       this.saveLlmLog({
         callType: method as any,
-        model,
+        model: actualModel,
         systemPrompt,
         userMessage,
         rawResponse: '',
         success: false,
         errorMessage,
+        fallbackUsed,
         latencyMs: Date.now() - startTime,
       }).catch(() => {});
       throw err;
@@ -89,11 +130,12 @@ export class LlmService {
 
     this.saveLlmLog({
       callType: method as any,
-      model,
+      model: actualModel,
       systemPrompt,
       userMessage,
       rawResponse,
       success: true,
+      fallbackUsed,
       latencyMs: Date.now() - startTime,
     }).catch(() => {});
     return rawResponse;
@@ -112,6 +154,7 @@ export class LlmService {
     errorMessage?: string;
     latencyMs: number;
     tokensUsed?: number;
+    fallbackUsed?: boolean;
     documentId?: string;
   }): Promise<void> {
     try {
@@ -132,12 +175,18 @@ export class LlmService {
     onChunk?: (token: string) => void,
   ): Promise<{ parsed: Record<string, unknown>; detail: LlmCallDetail }> {
     const startTime = Date.now();
+    let actualModel = model;
+    let fallbackUsed = false;
     const rawResponse = await this.callLLMWithLog(
       method,
       systemPrompt,
       userMessage,
       model,
       onChunk,
+      (usedModel, usedFallback) => {
+        actualModel = usedModel;
+        fallbackUsed = usedFallback;
+      },
     );
     const latencyMs = Date.now() - startTime;
     const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
@@ -151,13 +200,14 @@ export class LlmService {
     return {
       parsed,
       detail: {
-        model,
+        model: actualModel,
         systemPrompt,
         userMessage,
         rawResponse,
         parsedResult: parsed,
         success: true,
         tokensUsed: undefined,
+        fallbackUsed,
         latencyMs,
       },
     };
@@ -174,12 +224,18 @@ export class LlmService {
     onChunk?: (token: string) => void,
   ): Promise<{ items: Record<string, unknown>[]; detail: LlmCallDetail }> {
     const startTime = Date.now();
+    let actualModel = model;
+    let fallbackUsed = false;
     const rawResponse = await this.callLLMWithLog(
       method,
       systemPrompt,
       userMessage,
       model,
       onChunk,
+      (usedModel, usedFallback) => {
+        actualModel = usedModel;
+        fallbackUsed = usedFallback;
+      },
     );
     const latencyMs = Date.now() - startTime;
     const jsonMatch = rawResponse.match(/\[[\s\S]*\]/);
@@ -193,13 +249,14 @@ export class LlmService {
     return {
       items,
       detail: {
-        model,
+        model: actualModel,
         systemPrompt,
         userMessage,
         rawResponse,
         parsedResult: { items },
         success: true,
         tokensUsed: undefined,
+        fallbackUsed,
         latencyMs,
       },
     };
@@ -299,25 +356,74 @@ export class LlmService {
   }
 
   /**
+   * 构造 chat completions 地址，兼容 DeepSeek 根路径和 DashScope compatible-mode 路径。
+   */
+  private chatCompletionsUrl(baseUrl: string): string {
+    const url = baseUrl.replace(/\/+$/, '');
+    if (/\/v1$/.test(url) || /\/compatible-mode\/v1$/.test(url)) {
+      return `${url}/chat/completions`;
+    }
+    return `${url}/v1/chat/completions`;
+  }
+
+  /**
    * 流式 LLM 调用 — 逐个 token 返回，同时累积完整响应
    */
   async *callLLMStream(
     systemPrompt: string,
     userMessage: string,
     model: string,
+    onModelUsed?: (model: string, fallbackUsed: boolean) => void,
   ): AsyncGenerator<{ token: string; done: boolean; fullText: string }> {
     const apiKey = process.env.LLM_API_KEY;
     if (!apiKey) throw new Error('LLM_API_KEY 未配置');
 
     const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
 
+    let emitted = false;
+    try {
+      for await (const chunk of this.callLLMStreamWithConfig(
+        systemPrompt,
+        userMessage,
+        model,
+        apiKey,
+        baseUrl,
+      )) {
+        if (!chunk.done) emitted = true;
+        yield chunk;
+      }
+      onModelUsed?.(model, false);
+    } catch (err) {
+      // 如果已经开始输出，不再切换备用模型，避免把两段不连续的流拼在一起。
+      if (emitted || !this.fallbackModel || !this.fallbackApiKey) throw err;
+
+      onModelUsed?.(this.fallbackModel, true);
+      for await (const chunk of this.callLLMStreamWithConfig(
+        systemPrompt,
+        userMessage,
+        this.fallbackModel,
+        this.fallbackApiKey,
+        this.fallbackBaseUrl,
+      )) {
+        yield chunk;
+      }
+    }
+  }
+
+  private async *callLLMStreamWithConfig(
+    systemPrompt: string,
+    userMessage: string,
+    model: string,
+    apiKey: string,
+    baseUrl: string,
+  ): AsyncGenerator<{ token: string; done: boolean; fullText: string }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000);
 
     let fullText = '';
 
     try {
-      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      const response = await fetch(this.chatCompletionsUrl(baseUrl), {
         method: 'POST',
         signal: controller.signal,
         headers: {
@@ -397,6 +503,7 @@ export class LlmService {
     systemPrompt: string,
     userMessage: string,
     model?: string,
+    onModelUsed?: (model: string, fallbackUsed: boolean) => void,
   ): Promise<string> {
     const apiKey = process.env.LLM_API_KEY;
     if (!apiKey) {
@@ -406,11 +513,41 @@ export class LlmService {
     const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
     const useModel = model || this.proModel;
 
+    try {
+      const content = await this.callLLMWithConfig(
+        systemPrompt,
+        userMessage,
+        useModel,
+        apiKey,
+        baseUrl,
+      );
+      onModelUsed?.(useModel, false);
+      return content;
+    } catch (err) {
+      if (!this.fallbackModel || !this.fallbackApiKey) throw err;
+      onModelUsed?.(this.fallbackModel, true);
+      return this.callLLMWithConfig(
+        systemPrompt,
+        userMessage,
+        this.fallbackModel,
+        this.fallbackApiKey,
+        this.fallbackBaseUrl,
+      );
+    }
+  }
+
+  private async callLLMWithConfig(
+    systemPrompt: string,
+    userMessage: string,
+    model: string,
+    apiKey: string,
+    baseUrl: string,
+  ): Promise<string> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000);
 
     try {
-      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      const response = await fetch(this.chatCompletionsUrl(baseUrl), {
         method: 'POST',
         signal: controller.signal,
         headers: {
@@ -418,7 +555,7 @@ export class LlmService {
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model: useModel,
+          model,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userMessage },
@@ -449,9 +586,7 @@ export class LlmService {
 
       const content = data.choices[0]?.message?.content || '';
       if (!content.trim()) {
-        throw new Error(
-          `LLM 返回空内容 (model=${useModel}, thinking=disabled)`,
-        );
+        throw new Error(`LLM 返回空内容 (model=${model}, thinking=disabled)`);
       }
 
       return content;

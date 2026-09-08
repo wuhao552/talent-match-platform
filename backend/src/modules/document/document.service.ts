@@ -678,4 +678,20 @@ export class DocumentService {
     }
     return result;
   }
+
+  /**
+   * 保存流水线总耗时（毫秒），写入 parsedJson 以便刷新页面后仍可展示。
+   */
+  async savePipelineDuration(
+    documentId: string,
+    durationMs: number,
+  ): Promise<Document> {
+    const doc = await this.findById(documentId);
+    const parsedJson = {
+      ...(doc.parsedJson || {}),
+      pipelineDurationMs: Math.max(0, Math.round(Number(durationMs) || 0)),
+    };
+    await this.docRepo.update(doc.id, { parsedJson });
+    return this.findById(documentId);
+  }
 }

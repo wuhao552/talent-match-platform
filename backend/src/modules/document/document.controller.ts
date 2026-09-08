@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Delete,
   Param,
   Body,
@@ -164,6 +165,21 @@ export class DocumentController {
     await this.documentService.findById(id, user.id);
     const skills = await this.documentService.getDocumentSkills(id);
     return { code: 200, message: 'ok', data: skills };
+  }
+
+  @Patch(':id/pipeline-duration')
+  @UseGuards(JwtAuthGuard)
+  async savePipelineDuration(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body('durationMs') durationMs: number,
+    @CurrentUser() user: { id: string },
+  ) {
+    await this.documentService.findById(id, user.id);
+    const doc = await this.documentService.savePipelineDuration(
+      id,
+      Number(durationMs) || 0,
+    );
+    return { code: 200, message: 'ok', data: doc };
   }
 
   // SSE 流式推送 Agent 流水线执行过程（token 通过 query 传入，因为 EventSource 不支持自定义 Header）

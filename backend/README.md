@@ -325,6 +325,13 @@ GET 端点（面试题 / 教练）通过 query 中的 `token` 验证 JWT（兼�
 
 > 注：代码默认统一使用 `deepseek-v4-flash`；仅当在 `.env` 中显式设置 `LLM_MODEL`（如 `deepseek-v4-pro`）后，复杂任务才会切换到该模型。
 
+备用模型（自动切换）：
+- 当主模型呼叫失败（如 DeepSeek 不可用）时，会自动尝试 `LLM_FALLBACK_MODEL`。
+- 可通过环境变量配置：
+  - `LLM_FALLBACK_MODEL`（或 `LLM_BACKUP_MODEL`）— 备用模型名，例如 `qwen3.8-flash`
+  - `LLM_FALLBACK_API_KEY`（或 `LLM_BACKUP_API_KEY`）— 备用模型 API Key
+  - `LLM_FALLBACK_BASE_URL`（或 `LLM_BACKUP_BASE_URL`）— 备用模型 OpenAI 兼容接口地址，默认使用阿里云 DashScope `https://dashscope.aliyuncs.com/compatible-mode/v1`
+
 特性：
 - 内存缓存，30 分钟 TTL（SHA-256 哈希键）
 - SSE 流式输出支持

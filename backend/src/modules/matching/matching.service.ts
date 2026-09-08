@@ -69,6 +69,16 @@ export class MatchingService {
       console.log(
         `[Matching] cache hit resume=${resumeDocId.slice(0, 8)} job=${jobDocId.slice(0, 8)} score=${existing.overallScore}`,
       );
+      // 语义匹配 trace 是流水线展示的重要数据；若之前由自动匹配先生成而缺失，
+      // 在这里补写，确保重新观看流水线时仍有语义匹配结果。
+      if (
+        embeddingTrace &&
+        embeddingTrace.length > 0 &&
+        (!existing.embeddingTrace || existing.embeddingTrace.length === 0)
+      ) {
+        existing.embeddingTrace = embeddingTrace;
+        await this.matchRepo.save(existing);
+      }
       return existing;
     }
 
@@ -126,6 +136,15 @@ export class MatchingService {
         for (const step of existing.algorithmTrace) {
           onProgress(step);
         }
+      }
+      // 补写缺失的语义匹配 trace（例如：自动匹配先落库、随后流水线流式命中缓存时）
+      if (
+        embeddingTrace &&
+        embeddingTrace.length > 0 &&
+        (!existing.embeddingTrace || existing.embeddingTrace.length === 0)
+      ) {
+        existing.embeddingTrace = embeddingTrace;
+        await this.matchRepo.save(existing);
       }
       return existing;
     }
@@ -514,7 +533,8 @@ export class MatchingService {
       jobId: string;
     }> = [];
 
-    const missingPairsInfo = pairsInfo.filter((p) => {
+    const missingPairsInfo: typeof pairsInfo = [];
+    for (const p of pairsInfo) {
       const key = `${p.resumeId}-${p.jobId}`;
       const existing = existingMatchMap.get(key);
       if (existing) {
@@ -527,6 +547,15 @@ export class MatchingService {
             onProgress(step, p.resumeId, p.jobId);
           }
         }
+        // 补写缺失的语义匹配 trace，避免流水线页面显示“0 项语义匹配”
+        if (
+          embeddingTrace &&
+          embeddingTrace.length > 0 &&
+          (!existing.embeddingTrace || existing.embeddingTrace.length === 0)
+        ) {
+          existing.embeddingTrace = embeddingTrace;
+          await this.matchRepo.save(existing);
+        }
         results.push({
           id: existing.id,
           overallScore: existing.overallScore,
@@ -534,10 +563,10 @@ export class MatchingService {
           resumeId: p.resumeId,
           jobId: p.jobId,
         });
-        return false;
+      } else {
+        missingPairsInfo.push(p);
       }
-      return true;
-    });
+    }
 
     if (missingPairsInfo.length === 0) {
       return results;
@@ -1194,7 +1223,16 @@ export class MatchingService {
     if (!doc || doc.status !== 'parsed') return;
 
     const TOP_K = 3;
-    const scored = await this.getTopKByAlgorithmScore(docId, TOP_K);
+    const embeddingResults: EmbeddingTraceItem[] = [];
+    const scored = await this.getTopKByAlgorithmScore(docId, TOP_K, (step) => {
+      if (step.data?.jobSkill) {
+        embeddingResults.push({
+          jobSkill: step.data.jobSkill as string,
+          bestMatch: (step.data.matchedResume as string) || null,
+          similarity: (step.data.similarity as number) || 0,
+        });
+      }
+    });
 
     // 如果没有候选且还有重试次数，延迟后重试（等待同批文档解析完成）
     if (scored.length === 0 && retryCount < 3) {
@@ -1218,10 +1256,20 @@ export class MatchingService {
       const existing = await this.matchRepo.findOne({
         where: { resumeDocId: resumeId, jobDocId: jobId, staleAt: IsNull() },
       });
-      if (existing) continue;
+      if (existing) {
+        // 自动匹配先落库但缺少语义 trace 时补写，保证流水线展示不丢语义结果
+        if (
+          embeddingResults.length > 0 &&
+          (!existing.embeddingTrace || existing.embeddingTrace.length === 0)
+        ) {
+          existing.embeddingTrace = embeddingResults;
+          await this.matchRepo.save(existing);
+        }
+        continue;
+      }
 
       try {
-        await this.calculateMatch(resumeId, jobId);
+        await this.calculateMatch(resumeId, jobId, undefined, embeddingResults);
       } catch (err) {
         console.error(
           `[AutoMatch] FAILED resume=${resumeId?.slice(0, 8)} job=${jobId?.slice(0, 8)}:`,
