@@ -617,6 +617,62 @@ function StepChips({ steps }: { steps: PipelineStep[] }) {
   )
 }
 
+// ── Persisted pipeline helpers ──
+
+/** 从已落库的匹配结果中取最有用的语义匹配 trace（可能只有部分结果保存了该字段）。 */
+function getPersistedEmbeddingTrace(matches: MatchResult[]) {
+  return matches
+    .filter((m) => m.embeddingTrace && m.embeddingTrace.length > 0)
+    .sort((a, b) => (b.embeddingTrace?.length ?? 0) - (a.embeddingTrace?.length ?? 0))[0]
+    ?.embeddingTrace ?? []
+}
+
+/** 语义匹配数量：优先使用持久化的 embedding trace；历史数据若没有该字段，则用具体匹配明细里的语义匹配项兜底。 */
+function getSemanticMatchCount(matches: MatchResult[]): number {
+  const trace = getPersistedEmbeddingTrace(matches)
+  if (trace.length > 0) {
+    return trace.filter((r) => r.bestMatch).length
+  }
+  return matches.reduce(
+    (sum, m) => sum + (m.matchDetails?.filter((d) => d.matchMethod === 'embedding').length ?? 0),
+    0,
+  )
+}
+
+/** 计算/恢复流水线总耗时：优先使用已持久化的 pipelineDurationMs，否则用已保存的解析时间戳 + 匹配 trace 估算。 */
+function getPipelineDurationMs(doc: Document, matches: MatchResult[]): number {
+  const parsedJson = doc.parsedJson as {
+    pipelineDurationMs?: unknown
+    pipeline?: Array<{ timestamp?: unknown }>
+  } | null | undefined
+
+  const stored = parsedJson?.pipelineDurationMs
+  if (typeof stored === 'number' && isFinite(stored) && stored > 0) {
+    return Math.round(stored)
+  }
+
+  let parseMs = 0
+  const pipeline = parsedJson?.pipeline
+  if (Array.isArray(pipeline) && pipeline.length > 1) {
+    const times = pipeline
+      .map((s) => Number(s.timestamp))
+      .filter((t) => Number.isFinite(t) && t > 0)
+    if (times.length > 1) {
+      parseMs = Math.max(...times) - Math.min(...times)
+    }
+  }
+
+  let matchMs = 0
+  const matchDurations = matches
+    .map((m) => (m.algorithmTrace ?? []).reduce((sum, s) => sum + (s.durationMs || 0), 0))
+    .filter((d) => d > 0)
+  if (matchDurations.length > 0) {
+    matchMs = Math.max(...matchDurations)
+  }
+
+  return Math.max(0, parseMs + matchMs)
+}
+
 // ── Match Pair Display ──
 
 function MatchPairDisplay({ pair }: { pair: MatchPair }) {
@@ -864,8 +920,8 @@ export function PipelineView() {
         steps: [], llmCalls: [],
         result: m,
       })))
-      const embeddingTrace = matches[0]?.embeddingTrace ?? []
-      const matchedCount = embeddingTrace.filter((r) => r.bestMatch).length
+      const embeddingTrace = getPersistedEmbeddingTrace(matches)
+      const matchedCount = getSemanticMatchCount(matches)
       setMatchPhaseSteps([
         {
           phase: 'algorithm_prefilter',
@@ -882,6 +938,15 @@ export function PipelineView() {
           data: { embeddingResults: embeddingTrace },
         },
       ])
+
+      // 恢复并(如缺失则回填)流水线执行耗时
+      const durationMs = getPipelineDurationMs(doc, matches)
+      setElapsed(durationMs)
+      const storedDuration = (doc.parsedJson as { pipelineDurationMs?: unknown } | null | undefined)?.pipelineDurationMs
+      if (!storedDuration && durationMs > 0) {
+        documentApi.savePipelineDuration(id, durationMs).catch(() => {})
+      }
+
       setPhase('done')
       if (timerRef.current) clearInterval(timerRef.current)
     } else {
@@ -1112,8 +1177,8 @@ export function PipelineView() {
           steps: [], llmCalls: [],
           result: m,
         })))
-        const embeddingTrace = matches[0]?.embeddingTrace ?? []
-        const matchedCount = embeddingTrace.filter((r) => r.bestMatch).length
+        const embeddingTrace = getPersistedEmbeddingTrace(matches)
+        const matchedCount = getSemanticMatchCount(matches)
         setMatchPhaseSteps([
           {
             phase: 'algorithm_prefilter',
@@ -1130,6 +1195,14 @@ export function PipelineView() {
             data: { embeddingResults: embeddingTrace },
           },
         ])
+
+        const durationMs = getPipelineDurationMs(document, matches)
+        setElapsed(durationMs)
+        const storedDuration = (document.parsedJson as { pipelineDurationMs?: unknown } | null | undefined)?.pipelineDurationMs
+        if (!storedDuration && durationMs > 0) {
+          documentApi.savePipelineDuration(docId, durationMs).catch(() => {})
+        }
+
         setPhase('done')
         if (timerRef.current) clearInterval(timerRef.current)
       } catch {
@@ -1257,6 +1330,11 @@ export function PipelineView() {
         ...p,
         llmCalls: p.llmCalls.map(c => ({ ...c, done: true })),
       })))
+      // 执行总耗时持久化到文档，刷新后仍能显示
+      if (docId) {
+        const finalDuration = Date.now() - startRef.current
+        documentApi.savePipelineDuration(docId, finalDuration).catch(() => {})
+      }
       setPhase('done')
       es.close()
       if (timerRef.current) clearInterval(timerRef.current)

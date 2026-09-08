@@ -113,6 +113,11 @@ export const documentApi = {
     request<ApiResponse<Document>>(`/documents/${id}/parse`, {
       method: 'POST',
     }),
+  savePipelineDuration: (id: string, durationMs: number) =>
+    request<ApiResponse<Document>>(`/documents/${id}/pipeline-duration`, {
+      method: 'PATCH',
+      body: JSON.stringify({ durationMs }),
+    }),
   getSkills: (id: string) =>
     request<ApiResponse<DocumentSkill[]>>(`/documents/${id}/skills`),
   getSkillsBatch: (ids: string[]) =>
