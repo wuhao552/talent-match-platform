@@ -1,20 +1,63 @@
-# DeepMatch · 人才-岗位智能匹配平台
+<p align="center">
+  <img src="images/logo.jpg" width="220" alt="DeepMatch">
+</p>
 
-基于**深度语义理解**与**技能知识建模**的 AI 招聘系统。系统把简历与岗位文档解析为结构化技能，构建标准技能库与可视化能力图谱，再通过大模型语义打分 + Embedding 向量相似度完成人才与岗位的**双向匹配**。
+<h3 align="center">基于深度语义理解与技能知识建模的 AI 招聘系统</h3>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/backend-NestJS%2011-e0234e" alt="NestJS 11">
+  <img src="https://img.shields.io/badge/frontend-React%2019%20%2B%20Vite%208-61dafb" alt="React 19">
+  <img src="https://img.shields.io/badge/database-PostgreSQL-336791" alt="PostgreSQL">
+  <img src="https://img.shields.io/badge/LLM-DeepSeek%20%2B%20DashScope-4b32c3" alt="LLM">
+</p>
+
+---
+
+系统把简历与岗位文档解析为结构化技能，构建标准技能库与可视化能力图谱，再通过大模型语义打分 + Embedding 向量相似度完成人才与岗位的**双向匹配**。
+
+## 核心流程
+
+![文档解析 → 技能提取 → 双向匹配](images/pipeline.png)
+
+| 阶段 | 做什么 |
+|------|--------|
+| 阶段 0 · 解析 | 简历 / 岗位描述（PDF、DOCX）文本提取 |
+| 阶段 1 · 抽取 | 技能抽取子智能体输出 `{name, prof, years}` |
+| 阶段 2 · 规范化 | 技能精确匹配 → 包含匹配 → 编辑距离，归一到标准技能库 |
+| 阶段 3 · 算法预筛选 | 精确 ID 匹配 + 嵌入模糊匹配（阈值 0.5），产出 Top-3 候选 |
+| 阶段 4 · LLM 深度评估 | 对 Top-3 逐对做五维评估，融合出最终分数 |
+
+两段打分公式：
 
 ```
-简历 / 岗位文档 (PDF · DOCX)
-        │
-        ▼
-  文档解析 ──► 技能提取 (LLM) ──► 技能标准化 (标准技能库 + Embedding 向量)
-        │                                    │
-        └──────────────┬─────────────────────┘
-                       ▼
-        双向匹配：LLM 语义打分 + 向量相似度 + 多维能力对比
-                       │
-                       ├──► 匹配结果与维度明细
-                       └──► 能力图谱可视化 (d3-force 布局，服务端预计算)
+S_algo = 0.6 × coverage + 0.4 × adequacy      # 算法分：覆盖率 + 充分度
+S      = 0.5 × S_algo + 0.5 × S_llm           # 最终分：算法分与 LLM 分各占一半
 ```
+
+## 系统架构
+
+![系统架构图](images/architecture.png)
+
+从下往上看：`KingbaseES V9 / PostgreSQL` 持久化 → `NestJS 11` 应用服务（认证、简历、岗位、匹配、消息、AI 助手、图谱、通知、管理）
+→ `Nginx` 反向代理（SSE 流式响应、静态资源、`/api` 代理）→ 两端前端；左侧虚线框是贯穿全流程的 **AI Agent 流水线**。
+
+### 分层技术栈
+
+![分层技术栈](images/tech-layers.png)
+
+### 界面预览
+
+| 用户端工作台 | 能力图谱可视化 |
+|---|---|
+| ![工作台](images/dashboard.png) | ![能力图谱](images/skill-graph.png) |
+
+**匹配结果洞察**——大模型在匹配优势、能力差距、可迁移技能、期望薪资、意向城市等维度给出可解释结论：
+
+![大模型多维分析匹配结果](images/matching-analysis.png)
+
+**管理后台**——用户 / 文档 / 技能 / 匹配记录 / LLM 日志 / 岗位 / 投递 / 通知广播：
+
+![管理后台](images/admin-console.png)
 
 ## 目录结构
 
@@ -23,6 +66,7 @@
 | [`backend/`](backend/) | NestJS 11 + TypeScript + TypeORM + PostgreSQL，REST API（全局前缀 `/api`） | 3100 |
 | [`frontend/`](frontend/) | React 19 + Vite 8 + Tailwind CSS 4 + shadcn/ui，用户端 | 3000 |
 | [`backend-management/`](backend-management/) | React 19 + Vite 8 管理后台，生产构建 `base` 为 `/admin/` | 3001 |
+| [`images/`](images/) | README 中的架构图与界面截图 | — |
 | `sql/public.sql` | 数据库结构快照（PostgreSQL 18 导出，**纯 DDL、不含数据**） | — |
 
 ## 功能概览
@@ -161,9 +205,16 @@ npm run migration:revert    # 回滚最近一次
 npm run migration:generate  # 依据实体差异生成迁移
 ```
 
+## 项目路线
+
+从研究问题出发的三条并行主线（数据处理 / AI 匹配 / 平台开发），收敛到招聘业务闭环与 AI 职业成长计划：
+
+![项目路线图](images/roadmap.png)
+
 ## 数据与隐私说明
 
-- 本仓库**不包含任何真实简历或个人信息**，文档与用户均为虚构的演示数据。
+- 本仓库**不包含任何真实简历或个人信息**，文档与用户均为虚构的演示数据；
+  README 中的界面截图取自演示环境。
 - 招聘场景下的简历属于个人敏感信息。若用于生产环境，请先完成数据合规与隐私评估，
   不要用真实简历做公开演示。
 - 上传的文件保存在 `backend/uploads/`（已在 `.gitignore` 中忽略），请勿提交到版本库。
