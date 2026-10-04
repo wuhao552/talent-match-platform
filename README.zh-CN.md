@@ -51,6 +51,10 @@ S      = 0.5 × S_algo + 0.5 × S_llm           # 最终分：算法分与 LLM �
 
 ### 界面预览
 
+**登录页**——"让每一份能力，遇见真正适合的机会。"
+
+![登录页](images/login.png)
+
 | 用户端工作台 | 能力图谱可视化 |
 |---|---|
 | ![工作台](images/dashboard.png) | ![能力图谱](images/skill-graph.png) |

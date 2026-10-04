@@ -50,6 +50,10 @@ Reading bottom-up: `KingbaseES V9 / PostgreSQL` for persistence → `NestJS 11` 
 
 ### Screenshots
 
+**Sign-in** — *"Let every skill meet the opportunity it truly deserves."*
+
+![Sign-in page](images/login.png)
+
 | Candidate workspace | Skill graph visualization |
 |---|---|
 | ![Workspace](images/dashboard.png) | ![Skill graph](images/skill-graph.png) |
