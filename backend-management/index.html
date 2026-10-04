@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>管理后台 - 人才匹配系统</title>
+    <script>
+      // Object.hasOwn polyfill —— 部署目标 Chrome 90 不支持（Chrome 93+ 才有）
+      // @base-ui/react 的 Tabs/Combobox/Field 等组件依赖此 API，缺失会白屏
+      if (typeof Object.hasOwn !== 'function') {
+        Object.hasOwn = function (object, property) {
+          return Object.prototype.hasOwnProperty.call(object, property)
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
