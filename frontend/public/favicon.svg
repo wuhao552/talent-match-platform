@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="48" y2="48">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <!-- Background circle -->
+  <rect width="48" height="48" rx="10" fill="url(#bg)"/>
+  <!-- Person silhouette -->
+  <circle cx="19" cy="16" r="5.5" fill="white" opacity="0.95"/>
+  <path d="M10 32c0-6 4-10 9-10s9 4 9 10" fill="white" opacity="0.95"/>
+  <!-- Connection nodes (skills) -->
+  <circle cx="34" cy="14" r="3.5" fill="#a5b4fc"/>
+  <circle cx="40" cy="24" r="3" fill="#c4b5fd"/>
+  <circle cx="34" cy="34" r="3.5" fill="#a5b4fc"/>
+  <!-- Connection lines -->
+  <line x1="24" y1="16" x2="30.5" y2="14" stroke="white" stroke-width="1.5" opacity="0.6" stroke-linecap="round"/>
+  <line x1="24" y1="22" x2="37" y2="24" stroke="white" stroke-width="1.5" opacity="0.6" stroke-linecap="round"/>
+  <line x1="22" y1="28" x2="30.5" y2="34" stroke="white" stroke-width="1.5" opacity="0.6" stroke-linecap="round"/>
+  <!-- Match indicator -->
+  <path d="M34 24l-2 0" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
+</svg>

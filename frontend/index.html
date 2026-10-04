@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="DeepMatch - 基于深度语义理解与技能知识建模的 AI 招聘匹配平台" />
+    <title>DeepMatch · 能力图谱智能匹配</title>
+    <script>
+      // Object.hasOwn polyfill —— 部署目标 Chrome 90 不支持（Chrome 93+ 才有）
+      // @base-ui/react 的 Tabs 等组件依赖此 API，缺失会导致注册页等白屏
+      if (typeof Object.hasOwn !== 'function') {
+        Object.hasOwn = function (object, property) {
+          return Object.prototype.hasOwnProperty.call(object, property)
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
