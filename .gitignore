@@ -1,0 +1,28 @@
+# 依赖与构建产物
+node_modules/
+dist/
+dist-ssr/
+coverage/
+.vite/
+
+# 环境变量与密钥（务必保留 .env.example）
+.env
+.env.*
+!.env.example
+
+# 运行时数据：上传文件与本地数据库
+uploads/
+*.sqlite
+*.sqlite3
+talent_match
+
+# 日志与系统文件
+*.log
+npm-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.tsbuildinfo
